@@ -36,7 +36,6 @@ namespace render {
 }
 
 static const float SCALING_RATIO = .05f;
-static const float SMOOTHING_RATIO = .05f; // 0 < ratio < 1
 
 extern const float CHAT_MESSAGE_SCALE;
 extern const float CHAT_MESSAGE_HEIGHT;
@@ -76,7 +75,7 @@ public:
     static void setShowCollisionShapes(bool render);
     static void setShowNamesAboveHeads(bool show);
 
-    explicit Avatar(QThread* thread, RigPointer rig = nullptr);
+    explicit Avatar(QThread* thread);
     ~Avatar();
 
     virtual void instantiableAvatar() = 0;
@@ -113,8 +112,6 @@ public:
     const Head* getHead() const { return static_cast<const Head*>(_headData); }
     Head* getHead() { return static_cast<Head*>(_headData); }
 
-    glm::quat getWorldAlignedOrientation() const;
-
     AABox getBounds() const;
 
     /// Returns the distance to use as a LOD parameter.
@@ -123,8 +120,10 @@ public:
     virtual bool isMyAvatar() const override { return false; }
 
     virtual QVector<glm::quat> getJointRotations() const override;
+    using AvatarData::getJointRotation;
     virtual glm::quat getJointRotation(int index) const override;
     virtual QVector<glm::vec3> getJointTranslations() const override;
+    using AvatarData::getJointTranslation;
     virtual glm::vec3 getJointTranslation(int index) const override;
     virtual int getJointIndex(const QString& name) const override;
     virtual QStringList getJointNames() const override;
@@ -185,7 +184,7 @@ public:
     void scaleVectorRelativeToPosition(glm::vec3 &positionToScale) const;
 
     void slamPosition(const glm::vec3& position);
-    virtual void updateAttitude() override { _skeletonModel->updateAttitude(); }
+    virtual void updateAttitude(const glm::quat& orientation) override;
 
     // Call this when updating Avatar position with a delta.  This will allow us to
     // _accurately_ measure position changes and compute the resulting velocity
@@ -196,11 +195,10 @@ public:
 
     virtual void computeShapeInfo(ShapeInfo& shapeInfo);
     void getCapsule(glm::vec3& start, glm::vec3& end, float& radius);
+    float computeMass();
 
-    using SpatiallyNestable::setPosition;
-    virtual void setPosition(const glm::vec3& position) override;
-    using SpatiallyNestable::setOrientation;
-    virtual void setOrientation(const glm::quat& orientation) override;
+    void setPositionViaScript(const glm::vec3& position) override;
+    void setOrientationViaScript(const glm::quat& orientation) override;
 
     // these call through to the SpatiallyNestable versions, but they are here to expose these to javascript.
     Q_INVOKABLE virtual const QUuid getParentID() const override { return SpatiallyNestable::getParentID(); }
@@ -239,15 +237,6 @@ public:
 
     bool hasNewJointData() const { return _hasNewJointData; }
 
-    inline float easeInOutQuad(float lerpValue) {
-        assert(!((lerpValue < 0.0f) || (lerpValue > 1.0f)));
-
-        if (lerpValue < 0.5f) {
-            return (2.0f * lerpValue * lerpValue);
-        }
-
-        return (lerpValue*(4.0f - 2.0f * lerpValue) - 1.0f);
-    }
     float getBoundingRadius() const;
 
     void addToScene(AvatarSharedPointer self, const render::ScenePointer& scene);
@@ -258,6 +247,11 @@ public:
     void setPhysicsCallback(AvatarPhysicsCallback cb);
     void addPhysicsFlags(uint32_t flags);
     bool isInPhysicsSimulation() const { return _physicsCallback != nullptr; }
+
+    void fadeIn(render::ScenePointer scene);
+    void fadeOut(render::ScenePointer scene, KillAvatarReason reason);
+    bool isFading() const { return _isFading; }
+    void updateFadingStatus(render::ScenePointer scene);
 
 public slots:
 
@@ -271,14 +265,18 @@ public slots:
     void setModelURLFinished(bool success);
 
 protected:
-    const float SMOOTH_TIME_POSITION = 0.125f;
-    const float SMOOTH_TIME_ORIENTATION = 0.075f;
-
     virtual const QString& getSessionDisplayNameForTransport() const override { return _empty; } // Save a tiny bit of bandwidth. Mixer won't look at what we send.
     QString _empty{};
     virtual void maybeUpdateSessionDisplayNameFromTransport(const QString& sessionDisplayName) override { _sessionDisplayName = sessionDisplayName; } // don't use no-op setter!
 
     SkeletonModelPointer _skeletonModel;
+
+    void invalidateJointIndicesCache() const;
+    void withValidJointIndicesCache(std::function<void()> const& worker) const;
+    mutable QHash<QString, int> _modelJointIndicesCache;
+    mutable QReadWriteLock _modelJointIndicesCacheLock;
+    mutable bool _modelJointsCached { false };
+
     glm::vec3 _skeletonOffset;
     std::vector<std::shared_ptr<Model>> _attachmentModels;
     std::vector<std::shared_ptr<Model>> _attachmentsToRemove;
@@ -306,9 +304,10 @@ protected:
     // protected methods...
     bool isLookingAtMe(AvatarSharedPointer avatar) const;
 
+    void fade(render::Transaction& transaction, render::Transition::Type type);
+
     glm::vec3 getBodyRightDirection() const { return getOrientation() * IDENTITY_RIGHT; }
     glm::vec3 getBodyUpDirection() const { return getOrientation() * IDENTITY_UP; }
-    glm::quat computeRotationFromBodyToWorldUp(float proportion = 1.0f) const;
     void measureMotionDerivatives(float deltaTime);
 
     float getSkeletonHeight() const;
@@ -336,16 +335,6 @@ protected:
     RateCounter<> _skeletonModelSimulationRate;
     RateCounter<> _jointDataSimulationRate;
 
-    // Smoothing data for blending from one position/orientation to another on remote agents.
-    float _smoothPositionTime { SMOOTH_TIME_POSITION };
-    float _smoothPositionTimer { std::numeric_limits<float>::max() };
-    float _smoothOrientationTime { SMOOTH_TIME_ORIENTATION };
-    float _smoothOrientationTimer { std::numeric_limits<float>::max() };
-    glm::vec3 _smoothPositionInitial;
-    glm::vec3 _smoothPositionTarget;
-    glm::quat _smoothOrientationInitial;
-    glm::quat _smoothOrientationTarget;
-
 private:
     class AvatarEntityDataHash {
     public:
@@ -364,6 +353,8 @@ private:
     bool _initialized { false };
     bool _isLookAtTarget { false };
     bool _isAnimatingScale { false };
+    bool _mustFadeIn { false };
+    bool _isFading { false };
 
     static int _jointConesID;
 

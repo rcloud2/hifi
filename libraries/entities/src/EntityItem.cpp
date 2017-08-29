@@ -23,8 +23,8 @@
 #include <PhysicsHelpers.h>
 #include <RegisteredMetaTypes.h>
 #include <SharedUtil.h> // usecTimestampNow()
-#include <SoundCache.h>
 #include <LogHandler.h>
+#include <Extents.h>
 
 #include "EntityScriptingInterface.h"
 #include "EntitiesLogging.h"
@@ -35,48 +35,9 @@
 
 int EntityItem::_maxActionsDataSize = 800;
 quint64 EntityItem::_rememberDeletedActionTime = 20 * USECS_PER_SECOND;
-std::function<bool()> EntityItem::_entitiesShouldFadeFunction = [](){ return true; };
 
 EntityItem::EntityItem(const EntityItemID& entityItemID) :
-    SpatiallyNestable(NestableType::Entity, entityItemID),
-    _type(EntityTypes::Unknown),
-    _lastSimulated(0),
-    _lastUpdated(0),
-    _lastEdited(0),
-    _lastEditedBy(ENTITY_ITEM_DEFAULT_LAST_EDITED_BY),
-    _lastEditedFromRemote(0),
-    _lastEditedFromRemoteInRemoteTime(0),
-    _created(UNKNOWN_CREATED_TIME),
-    _changedOnServer(0),
-    _localRenderAlpha(ENTITY_ITEM_DEFAULT_LOCAL_RENDER_ALPHA),
-    _density(ENTITY_ITEM_DEFAULT_DENSITY),
-    _volumeMultiplier(1.0f),
-    _gravity(ENTITY_ITEM_DEFAULT_GRAVITY),
-    _acceleration(ENTITY_ITEM_DEFAULT_ACCELERATION),
-    _damping(ENTITY_ITEM_DEFAULT_DAMPING),
-    _restitution(ENTITY_ITEM_DEFAULT_RESTITUTION),
-    _friction(ENTITY_ITEM_DEFAULT_FRICTION),
-    _lifetime(ENTITY_ITEM_DEFAULT_LIFETIME),
-    _script(ENTITY_ITEM_DEFAULT_SCRIPT),
-    _scriptTimestamp(ENTITY_ITEM_DEFAULT_SCRIPT_TIMESTAMP),
-    _collisionSoundURL(ENTITY_ITEM_DEFAULT_COLLISION_SOUND_URL),
-    _registrationPoint(ENTITY_ITEM_DEFAULT_REGISTRATION_POINT),
-    _angularDamping(ENTITY_ITEM_DEFAULT_ANGULAR_DAMPING),
-    _visible(ENTITY_ITEM_DEFAULT_VISIBLE),
-    _collisionless(ENTITY_ITEM_DEFAULT_COLLISIONLESS),
-    _collisionMask(ENTITY_COLLISION_MASK_DEFAULT),
-    _dynamic(ENTITY_ITEM_DEFAULT_DYNAMIC),
-    _locked(ENTITY_ITEM_DEFAULT_LOCKED),
-    _userData(ENTITY_ITEM_DEFAULT_USER_DATA),
-    _simulationOwner(),
-    _marketplaceID(ENTITY_ITEM_DEFAULT_MARKETPLACE_ID),
-    _name(ENTITY_ITEM_DEFAULT_NAME),
-    _href(""),
-    _description(""),
-    _dirtyFlags(0),
-    _element(nullptr),
-    _physicsInfo(nullptr),
-    _simulated(false)
+    SpatiallyNestable(NestableType::Entity, entityItemID) 
 {
     setLocalVelocity(ENTITY_ITEM_DEFAULT_VELOCITY);
     setLocalAngularVelocity(ENTITY_ITEM_DEFAULT_ANGULAR_VELOCITY);
@@ -89,7 +50,8 @@ EntityItem::EntityItem(const EntityItemID& entityItemID) :
 
 EntityItem::~EntityItem() {
     // clear out any left-over actions
-    EntityTreePointer entityTree = _element ? _element->getTree() : nullptr;
+    EntityTreeElementPointer element = _element; // use local copy of _element for logic below
+    EntityTreePointer entityTree = element ? element->getTree() : nullptr;
     EntitySimulationPointer simulation = entityTree ? entityTree->getSimulation() : nullptr;
     if (simulation) {
         clearActions(simulation);
@@ -132,6 +94,7 @@ EntityPropertyFlags EntityItem::getEntityProperties(EncodeBitstreamParams& param
     requestedProperties += PROP_LOCKED;
     requestedProperties += PROP_USER_DATA;
     requestedProperties += PROP_MARKETPLACE_ID;
+    requestedProperties += PROP_SHOULD_HIGHLIGHT;
     requestedProperties += PROP_NAME;
     requestedProperties += PROP_HREF;
     requestedProperties += PROP_DESCRIPTION;
@@ -181,13 +144,14 @@ OctreeElement::AppendState EntityItem::appendEntityData(OctreePacketData* packet
 
     EntityPropertyFlags propertyFlags(PROP_LAST_ITEM);
     EntityPropertyFlags requestedProperties = getEntityProperties(params);
-    EntityPropertyFlags propertiesDidntFit = requestedProperties;
 
     // If we are being called for a subsequent pass at appendEntityData() that failed to completely encode this item,
     // then our entityTreeElementExtraEncodeData should include data about which properties we need to append.
     if (entityTreeElementExtraEncodeData && entityTreeElementExtraEncodeData->entities.contains(getEntityItemID())) {
         requestedProperties = entityTreeElementExtraEncodeData->entities.value(getEntityItemID());
     }
+
+    EntityPropertyFlags propertiesDidntFit = requestedProperties;
 
     LevelDetails entityLevel = packetData->startLevel();
 
@@ -276,6 +240,7 @@ OctreeElement::AppendState EntityItem::appendEntityData(OctreePacketData* packet
         APPEND_ENTITY_PROPERTY(PROP_LOCKED, getLocked());
         APPEND_ENTITY_PROPERTY(PROP_USER_DATA, getUserData());
         APPEND_ENTITY_PROPERTY(PROP_MARKETPLACE_ID, getMarketplaceID());
+        APPEND_ENTITY_PROPERTY(PROP_SHOULD_HIGHLIGHT, getShouldHighlight());
         APPEND_ENTITY_PROPERTY(PROP_NAME, getName());
         APPEND_ENTITY_PROPERTY(PROP_COLLISION_SOUND_URL, getCollisionSoundURL());
         APPEND_ENTITY_PROPERTY(PROP_HREF, getHref());
@@ -386,7 +351,13 @@ int EntityItem::readEntityDataFromBuffer(const unsigned char* data, int bytesLef
         return 0;
     }
 
-    qint64 clockSkew = args.sourceNode ? args.sourceNode->getClockSkewUsec() : 0;
+    int64_t clockSkew = 0;
+    uint64_t maxPingRoundTrip = 33333; // two frames periods at 60 fps
+    if (args.sourceNode) {
+        clockSkew = args.sourceNode->getClockSkewUsec();
+        const float MSECS_PER_USEC = 1000;
+        maxPingRoundTrip += args.sourceNode->getPingMs() * MSECS_PER_USEC;
+    }
 
     BufferParser parser(data, bytesLeftToRead);
 
@@ -653,7 +624,6 @@ int EntityItem::readEntityDataFromBuffer(const unsigned char* data, int bytesLef
     const QUuid& myNodeID = nodeList->getSessionUUID();
     bool weOwnSimulation = _simulationOwner.matchesValidID(myNodeID);
 
-
     // pack SimulationOwner and terse update properties near each other
     // NOTE: the server is authoritative for changes to simOwnerID so we always unpack ownership data
     // even when we would otherwise ignore the rest of the packet.
@@ -678,26 +648,31 @@ int EntityItem::readEntityDataFromBuffer(const unsigned char* data, int bytesLef
             if (newSimOwner.getID().isNull() && !_simulationOwner.pendingRelease(lastEditedFromBufferAdjusted)) {
                 // entity-server is trying to clear our ownership (probably at our own request)
                 // but we actually want to own it, therefore we ignore this clear event
-                // and pretend that we own it (we assume we'll recover it soon)
+                // and pretend that we own it (e.g. we assume we'll receive ownership soon)
 
                 // However, for now, when the server uses a newer time than what we sent, listen to what we're told.
-                if (overwriteLocalData) weOwnSimulation = false;
+                if (overwriteLocalData) {
+                    weOwnSimulation = false;
+                }
             } else if (_simulationOwner.set(newSimOwner)) {
                 markDirtyFlags(Simulation::DIRTY_SIMULATOR_ID);
                 somethingChanged = true;
                 // recompute weOwnSimulation for later
                 weOwnSimulation = _simulationOwner.matchesValidID(myNodeID);
             }
-        } else if (newSimOwner.getID().isNull() && _simulationOwner.pendingTake(lastEditedFromBufferAdjusted)) {
-            // entity-server is trying to clear someone  else's ownership
-            // but we want to own it, therefore we ignore this clear event
-            // and pretend that we own it (we assume we'll get it soon)
+        } else if (_simulationOwner.pendingTake(now - maxPingRoundTrip)) {
+            // we sent a bid before this packet could have been sent from the server
+            // so we ignore it and pretend we own the object's simulation
             weOwnSimulation = true;
-            if (!_simulationOwner.isNull()) {
-                // someone else really did own it
-                markDirtyFlags(Simulation::DIRTY_SIMULATOR_ID);
-                somethingChanged = true;
-                _simulationOwner.clearCurrentOwner();
+            if (newSimOwner.getID().isNull()) {
+                // entity-server is trying to clear someone  else's ownership
+                // but we want to own it, therefore we ignore this clear event
+                if (!_simulationOwner.isNull()) {
+                    // someone else really did own it
+                    markDirtyFlags(Simulation::DIRTY_SIMULATOR_ID);
+                    somethingChanged = true;
+                    _simulationOwner.clearCurrentOwner();
+                }
             }
         } else if (newSimOwner.matchesValidID(myNodeID) && !_hasBidOnSimulation) {
             // entity-server tells us that we have simulation ownership while we never requested this for this EntityItem,
@@ -810,11 +785,15 @@ int EntityItem::readEntityDataFromBuffer(const unsigned char* data, int bytesLef
     READ_ENTITY_PROPERTY(PROP_COLLISIONLESS, bool, updateCollisionless);
     READ_ENTITY_PROPERTY(PROP_COLLISION_MASK, uint8_t, updateCollisionMask);
     READ_ENTITY_PROPERTY(PROP_DYNAMIC, bool, updateDynamic);
-    READ_ENTITY_PROPERTY(PROP_LOCKED, bool, setLocked);
+    READ_ENTITY_PROPERTY(PROP_LOCKED, bool, updateLocked);
     READ_ENTITY_PROPERTY(PROP_USER_DATA, QString, setUserData);
 
     if (args.bitstreamVersion >= VERSION_ENTITIES_HAS_MARKETPLACE_ID) {
         READ_ENTITY_PROPERTY(PROP_MARKETPLACE_ID, QString, setMarketplaceID);
+    }
+
+    if (args.bitstreamVersion >= VERSION_ENTITIES_HAS_SHOULD_HIGHLIGHT) {
+        READ_ENTITY_PROPERTY(PROP_SHOULD_HIGHLIGHT, bool, setShouldHighlight);
     }
 
     READ_ENTITY_PROPERTY(PROP_NAME, QString, setName);
@@ -870,8 +849,9 @@ int EntityItem::readEntityDataFromBuffer(const unsigned char* data, int bytesLef
     // Tracking for editing roundtrips here. We will tell our EntityTree that we just got incoming data about
     // and entity that was edited at some time in the past. The tree will determine how it wants to track this
     // information.
-    if (_element && _element->getTree()) {
-        _element->getTree()->trackIncomingEntityLastEdited(lastEditedFromBufferAdjusted, bytesRead);
+    EntityTreeElementPointer element = _element; // use local copy of _element for logic below
+    if (element && element->getTree()) {
+        element->getTree()->trackIncomingEntityLastEdited(lastEditedFromBufferAdjusted, bytesRead);
     }
 
 
@@ -976,21 +956,6 @@ void EntityItem::setCollisionSoundURL(const QString& value) {
             myTree->notifyNewCollisionSoundURL(value, getEntityItemID());
         }
     }
-}
-
-SharedSoundPointer EntityItem::getCollisionSound() {
-    SharedSoundPointer result;
-    withReadLock([&] {
-        result = _collisionSound;
-    });
-
-    if (!result) {
-        result = DependencyManager::get<SoundCache>()->getSound(_collisionSoundURL);
-        withWriteLock([&] {
-            _collisionSound = result;
-        });
-    }
-    return result;
 }
 
 void EntityItem::simulate(const quint64& now) {
@@ -1293,27 +1258,15 @@ void EntityItem::getAllTerseUpdateProperties(EntityItemProperties& properties) c
     properties._accelerationChanged = true;
 }
 
-void EntityItem::pokeSimulationOwnership() {
-    markDirtyFlags(Simulation::DIRTY_SIMULATION_OWNERSHIP_FOR_POKE);
+void EntityItem::flagForOwnershipBid(uint8_t priority) {
+    markDirtyFlags(Simulation::DIRTY_SIMULATION_OWNERSHIP_PRIORITY);
     auto nodeList = DependencyManager::get<NodeList>();
     if (_simulationOwner.matchesValidID(nodeList->getSessionUUID())) {
         // we already own it
-        _simulationOwner.promotePriority(SCRIPT_POKE_SIMULATION_PRIORITY);
+        _simulationOwner.promotePriority(priority);
     } else {
         // we don't own it yet
-        _simulationOwner.setPendingPriority(SCRIPT_POKE_SIMULATION_PRIORITY, usecTimestampNow());
-    }
-}
-
-void EntityItem::grabSimulationOwnership() {
-    markDirtyFlags(Simulation::DIRTY_SIMULATION_OWNERSHIP_FOR_GRAB);
-    auto nodeList = DependencyManager::get<NodeList>();
-    if (_simulationOwner.matchesValidID(nodeList->getSessionUUID())) {
-        // we already own it
-        _simulationOwner.promotePriority(SCRIPT_GRAB_SIMULATION_PRIORITY);
-    } else {
-        // we don't own it yet
-        _simulationOwner.setPendingPriority(SCRIPT_GRAB_SIMULATION_PRIORITY, usecTimestampNow());
+        _simulationOwner.setPendingPriority(priority, usecTimestampNow());
     }
 }
 
@@ -1344,6 +1297,7 @@ bool EntityItem::setProperties(const EntityItemProperties& properties) {
     SET_ENTITY_PROPERTY_FROM_PROPERTIES(dynamic, updateDynamic);
     SET_ENTITY_PROPERTY_FROM_PROPERTIES(created, updateCreated);
     SET_ENTITY_PROPERTY_FROM_PROPERTIES(lifetime, updateLifetime);
+    SET_ENTITY_PROPERTY_FROM_PROPERTIES(locked, updateLocked);
 
     // non-simulation properties below
     SET_ENTITY_PROPERTY_FROM_PROPERTIES(script, setScript);
@@ -1352,7 +1306,6 @@ bool EntityItem::setProperties(const EntityItemProperties& properties) {
     SET_ENTITY_PROPERTY_FROM_PROPERTIES(collisionSoundURL, setCollisionSoundURL);
     SET_ENTITY_PROPERTY_FROM_PROPERTIES(localRenderAlpha, setLocalRenderAlpha);
     SET_ENTITY_PROPERTY_FROM_PROPERTIES(visible, setVisible);
-    SET_ENTITY_PROPERTY_FROM_PROPERTIES(locked, setLocked);
     SET_ENTITY_PROPERTY_FROM_PROPERTIES(userData, setUserData);
     SET_ENTITY_PROPERTY_FROM_PROPERTIES(marketplaceID, setMarketplaceID);
     SET_ENTITY_PROPERTY_FROM_PROPERTIES(name, setName);
@@ -1369,12 +1322,11 @@ bool EntityItem::setProperties(const EntityItemProperties& properties) {
     SET_ENTITY_PROPERTY_FROM_PROPERTIES(lastEditedBy, setLastEditedBy);
 
     AACube saveQueryAACube = _queryAACube;
-    checkAndAdjustQueryAACube();
-    if (saveQueryAACube != _queryAACube) {
+    if (checkAndMaybeUpdateQueryAACube() && saveQueryAACube != _queryAACube) {
         somethingChanged = true;
     }
 
-    // Now check the sub classes 
+    // Now check the sub classes
     somethingChanged |= setSubClassProperties(properties);
 
     // Finally notify if change detected
@@ -1438,26 +1390,20 @@ void EntityItem::setDimensions(const glm::vec3& value) {
 ///
 AACube EntityItem::getMaximumAACube(bool& success) const {
     if (_recalcMaxAACube) {
-        // * we know that the position is the center of rotation
         glm::vec3 centerOfRotation = getPosition(success); // also where _registration point is
         if (success) {
             _recalcMaxAACube = false;
-            // * we know that the registration point is the center of rotation
-            // * we can calculate the length of the furthest extent from the registration point
-            //   as the dimensions * max (registrationPoint, (1.0,1.0,1.0) - registrationPoint)
-            glm::vec3 dimensions = getDimensions();
-            glm::vec3 registrationPoint = (dimensions * _registrationPoint);
-            glm::vec3 registrationRemainder = (dimensions * (glm::vec3(1.0f, 1.0f, 1.0f) - _registrationPoint));
-            glm::vec3 furthestExtentFromRegistration = glm::max(registrationPoint, registrationRemainder);
+            // we want to compute the furthestExtent that an entity can extend out from its "position"
+            // to do this we compute the max of these two vec3s: registration and 1-registration
+            // and then scale by dimensions
+            glm::vec3 maxExtents = getDimensions() * glm::max(_registrationPoint, glm::vec3(1.0f) - _registrationPoint);
 
-            // * we know that if you rotate in any direction you would create a sphere
-            //   that has a radius of the length of furthest extent from registration point
-            float radius = glm::length(furthestExtentFromRegistration);
+            // there exists a sphere that contains maxExtents for all rotations
+            float radius = glm::length(maxExtents);
 
-            // * we know that the minimum bounding cube of this maximum possible sphere is
-            //   (center - radius) to (center + radius)
+            // put a cube around the sphere
+            // TODO? replace _maxAACube with _boundingSphereRadius
             glm::vec3 minimumCorner = centerOfRotation - glm::vec3(radius, radius, radius);
-
             _maxAACube = AACube(minimumCorner, radius * 2.0f);
         }
     } else {
@@ -1606,11 +1552,19 @@ void EntityItem::updateRegistrationPoint(const glm::vec3& value) {
 void EntityItem::updatePosition(const glm::vec3& value) {
     if (getLocalPosition() != value) {
         setLocalPosition(value);
+
+        EntityTreePointer tree = getTree();
         markDirtyFlags(Simulation::DIRTY_POSITION);
+        if (tree) {
+            tree->entityChanged(getThisPointer());
+        }
         forEachDescendant([&](SpatiallyNestablePointer object) {
             if (object->getNestableType() == NestableType::Entity) {
                 EntityItemPointer entity = std::static_pointer_cast<EntityItem>(object);
                 entity->markDirtyFlags(Simulation::DIRTY_POSITION);
+                if (tree) {
+                    tree->entityChanged(entity);
+                }
             }
         });
     }
@@ -1622,6 +1576,11 @@ void EntityItem::updateParentID(const QUuid& value) {
         // children are forced to be kinematic
         // may need to not collide with own avatar
         markDirtyFlags(Simulation::DIRTY_MOTION_TYPE | Simulation::DIRTY_COLLISION_GROUP);
+
+        EntityTreePointer tree = getTree();
+        if (tree) {
+            tree->addToNeedsParentFixupList(getThisPointer());
+        }
     }
 }
 
@@ -1636,6 +1595,8 @@ void EntityItem::updateDimensions(const glm::vec3& value) {
     if (getDimensions() != value) {
         setDimensions(value);
         markDirtyFlags(Simulation::DIRTY_SHAPE | Simulation::DIRTY_MASS);
+        _queryAACubeSet = false;
+        dimensionsChanged();
     }
 }
 
@@ -1691,14 +1652,20 @@ void EntityItem::updateVelocity(const glm::vec3& value) {
                 setLocalVelocity(Vectors::ZERO);
             }
         } else {
-            const float MIN_LINEAR_SPEED = 0.001f;
-            if (glm::length(value) < MIN_LINEAR_SPEED) {
-                velocity = ENTITY_ITEM_ZERO_VEC3;
-            } else {
-                velocity = value;
+            float speed = glm::length(value);
+            if (!glm::isnan(speed)) {
+                const float MIN_LINEAR_SPEED = 0.001f;
+                const float MAX_LINEAR_SPEED = 270.0f; // 3m per step at 90Hz
+                if (speed < MIN_LINEAR_SPEED) {
+                    velocity = ENTITY_ITEM_ZERO_VEC3;
+                } else if (speed > MAX_LINEAR_SPEED) {
+                    velocity = (MAX_LINEAR_SPEED / speed) * value;
+                } else {
+                    velocity = value;
+                }
+                setLocalVelocity(velocity);
+                _dirtyFlags |= Simulation::DIRTY_LINEAR_VELOCITY;
             }
-            setLocalVelocity(velocity);
-            _dirtyFlags |= Simulation::DIRTY_LINEAR_VELOCITY;
         }
     }
 }
@@ -1723,8 +1690,16 @@ void EntityItem::updateGravity(const glm::vec3& value) {
         if (getShapeType() == SHAPE_TYPE_STATIC_MESH) {
             _gravity = Vectors::ZERO;
         } else {
-            _gravity = value;
-            _dirtyFlags |= Simulation::DIRTY_LINEAR_VELOCITY;
+            float magnitude = glm::length(value);
+            if (!glm::isnan(magnitude)) {
+                const float MAX_ACCELERATION_OF_GRAVITY = 10.0f * 9.8f; // 10g
+                if (magnitude > MAX_ACCELERATION_OF_GRAVITY) {
+                    _gravity = (MAX_ACCELERATION_OF_GRAVITY / magnitude) * value;
+                } else {
+                    _gravity = value;
+                }
+                _dirtyFlags |= Simulation::DIRTY_LINEAR_VELOCITY;
+            }
         }
     }
 }
@@ -1735,14 +1710,20 @@ void EntityItem::updateAngularVelocity(const glm::vec3& value) {
         if (getShapeType() == SHAPE_TYPE_STATIC_MESH) {
             setLocalAngularVelocity(Vectors::ZERO);
         } else {
-            const float MIN_ANGULAR_SPEED = 0.0002f;
-            if (glm::length(value) < MIN_ANGULAR_SPEED) {
-                angularVelocity = ENTITY_ITEM_ZERO_VEC3;
-            } else {
-                angularVelocity = value;
+            float speed = glm::length(value);
+            if (!glm::isnan(speed)) {
+                const float MIN_ANGULAR_SPEED = 0.0002f;
+                const float MAX_ANGULAR_SPEED = 9.0f * TWO_PI; // 1/10 rotation per step at 90Hz
+                if (speed < MIN_ANGULAR_SPEED) {
+                    angularVelocity = ENTITY_ITEM_ZERO_VEC3;
+                } else if (speed > MAX_ANGULAR_SPEED) {
+                    angularVelocity = (MAX_ANGULAR_SPEED / speed) * value;
+                } else {
+                    angularVelocity = value;
+                }
+                setLocalAngularVelocity(angularVelocity);
+                _dirtyFlags |= Simulation::DIRTY_ANGULAR_VELOCITY;
             }
-            setLocalAngularVelocity(angularVelocity);
-            _dirtyFlags |= Simulation::DIRTY_ANGULAR_VELOCITY;
         }
     }
 }
@@ -2040,7 +2021,8 @@ bool EntityItem::removeActionInternal(const QUuid& actionID, EntitySimulationPoi
     _previouslyDeletedActions.insert(actionID, usecTimestampNow());
     if (_objectActions.contains(actionID)) {
         if (!simulation) {
-            EntityTreePointer entityTree = _element ? _element->getTree() : nullptr;
+        EntityTreeElementPointer element = _element; // use local copy of _element for logic below
+            EntityTreePointer entityTree = element ? element->getTree() : nullptr;
             simulation = entityTree ? entityTree->getSimulation() : nullptr;
         }
 
@@ -2310,11 +2292,13 @@ void EntityItem::locationChanged(bool tellPhysics) {
         }
     }
     SpatiallyNestable::locationChanged(tellPhysics); // tell all the children, also
+    somethingChangedNotification();
 }
 
 void EntityItem::dimensionsChanged() {
     requiresRecalcBoxes();
     SpatiallyNestable::dimensionsChanged(); // Do what you have to do
+    somethingChangedNotification();
 }
 
 void EntityItem::globalizeProperties(EntityItemProperties& properties, const QString& messageTemplate, const glm::vec3& offset) const {
@@ -2619,12 +2603,6 @@ QString EntityItem::getCollisionSoundURL() const {
     return result;
 }
 
-void EntityItem::setCollisionSound(SharedSoundPointer sound) { 
-    withWriteLock([&] {
-        _collisionSound = sound;
-    });
-}
-
 glm::vec3 EntityItem::getRegistrationPoint() const { 
     glm::vec3 result;
     withReadLock([&] {
@@ -2749,6 +2727,23 @@ void EntityItem::setLocked(bool value) {
     });
 }
 
+void EntityItem::updateLocked(bool value) {
+    bool changed { false };
+    withWriteLock([&] {
+        if (_locked != value) {
+            _locked = value;
+            changed = true;
+        }
+    });
+    if (changed) {
+        markDirtyFlags(Simulation::DIRTY_MOTION_TYPE);
+        EntityTreePointer tree = getTree();
+        if (tree) {
+            tree->entityChanged(getThisPointer());
+        }
+    }
+}
+
 QString EntityItem::getUserData() const { 
     QString result;
     withReadLock([&] {
@@ -2774,6 +2769,20 @@ QString EntityItem::getMarketplaceID() const {
 void EntityItem::setMarketplaceID(const QString& value) { 
     withWriteLock([&] {
         _marketplaceID = value;
+    });
+}
+
+bool EntityItem::getShouldHighlight() const {
+    bool result;
+    withReadLock([&] {
+        result = _shouldHighlight;
+    });
+    return result;
+}
+
+void EntityItem::setShouldHighlight(const bool value) {
+    withWriteLock([&] {
+        _shouldHighlight = value;
     });
 }
 
@@ -2806,3 +2815,25 @@ float EntityItem::getDensity() const {
     return result;
 }
 
+EntityItem::ChangeHandlerId EntityItem::registerChangeHandler(const ChangeHandlerCallback& handler) {
+    ChangeHandlerId result = QUuid::createUuid();
+    withWriteLock([&] {
+        _changeHandlers[result] = handler;
+    });
+    return result;
+}
+
+void EntityItem::deregisterChangeHandler(const ChangeHandlerId& changeHandlerId) {
+    withWriteLock([&] {
+        _changeHandlers.remove(changeHandlerId);
+    });
+}
+
+void EntityItem::somethingChangedNotification() {
+    auto id = getEntityItemID();
+    withReadLock([&] {
+        for (const auto& handler : _changeHandlers.values()) {
+            handler(id);
+        }
+    });
+}

@@ -22,6 +22,7 @@ class QScriptEngine;
 #include <DependencyManager.h>
 #include <display-plugins/AbstractHMDScriptingInterface.h>
 
+#include <QReadWriteLock>
 
 class HMDScriptingInterface : public AbstractHMDScriptingInterface, public Dependency {
     Q_OBJECT
@@ -43,6 +44,7 @@ public:
     Q_INVOKABLE QString preferredAudioOutput() const;
 
     Q_INVOKABLE bool isHMDAvailable(const QString& name = "");
+    Q_INVOKABLE bool isHeadControllerAvailable(const QString& name = "");
     Q_INVOKABLE bool isHandControllerAvailable(const QString& name = "");
     Q_INVOKABLE bool isSubdeviceContainingNameAvailable(const QString& name);
 
@@ -50,12 +52,8 @@ public:
     Q_INVOKABLE void requestHideHandControllers();
     Q_INVOKABLE bool shouldShowHandControllers() const;
 
-    Q_INVOKABLE bool setHandLasers(int hands, bool enabled, const glm::vec4& color, const glm::vec3& direction) const;
-    Q_INVOKABLE void disableHandLasers(int hands) const;
-
-    Q_INVOKABLE bool setExtraLaser(const glm::vec3& worldStart, bool enabled, const glm::vec4& color, const glm::vec3& direction) const;
-    Q_INVOKABLE void disableExtraLaser() const;
-
+    Q_INVOKABLE void activateHMDHandMouse();
+    Q_INVOKABLE void deactivateHMDHandMouse();
 
     /// Suppress the activation of any on-screen keyboard so that a script operation will
     /// not be interrupted by a keyboard popup
@@ -118,6 +116,9 @@ private:
     bool getHUDLookAtPosition3D(glm::vec3& result) const;
     glm::mat4 getWorldHMDMatrix() const;
     std::atomic<int> _showHandControllersCount { 0 };
+
+    QReadWriteLock _hmdHandMouseLock;
+    int _hmdHandMouseCount;
 };
 
 #endif // hifi_HMDScriptingInterface_h

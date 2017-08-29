@@ -9,11 +9,14 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "WindowScriptingInterface.h"
+
 #include <QClipboard>
 #include <QtCore/QDir>
 #include <QMessageBox>
 #include <QScriptValue>
 
+#include <shared/QtHelpers.h>
 #include <SettingHandle.h>
 
 #include <display-plugins/CompositorHelper.h>
@@ -23,8 +26,6 @@
 #include "MainWindow.h"
 #include "Menu.h"
 #include "OffscreenUi.h"
-
-#include "WindowScriptingInterface.h"
 
 static const QString DESKTOP_LOCATION = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
 static const QString LAST_BROWSE_LOCATION_SETTING = "LastBrowseLocation";
@@ -263,6 +264,10 @@ void WindowScriptingInterface::showAssetServer(const QString& upload) {
     QMetaObject::invokeMethod(qApp, "showAssetServerWidget", Qt::QueuedConnection, Q_ARG(QString, upload));
 }
 
+QString WindowScriptingInterface::checkVersion() {
+    return QCoreApplication::applicationVersion();
+}
+
 int WindowScriptingInterface::getInnerWidth() {
     return qApp->getWindow()->geometry().width();
 }
@@ -284,8 +289,17 @@ void WindowScriptingInterface::copyToClipboard(const QString& text) {
     QApplication::clipboard()->setText(text);
 }
 
+
+bool WindowScriptingInterface::setDisplayTexture(const QString& name) {
+    return  qApp->getActiveDisplayPlugin()->setDisplayTexture(name);   // Plugins that don't know how, answer false.
+}
+
 void WindowScriptingInterface::takeSnapshot(bool notify, bool includeAnimated, float aspectRatio) {
     qApp->takeSnapshot(notify, includeAnimated, aspectRatio);
+}
+
+void WindowScriptingInterface::takeSecondaryCameraSnapshot() {
+    qApp->takeSecondaryCameraSnapshot();
 }
 
 void WindowScriptingInterface::shareSnapshot(const QString& path, const QUrl& href) {
@@ -311,7 +325,7 @@ bool WindowScriptingInterface::isPhysicsEnabled() {
 int WindowScriptingInterface::openMessageBox(QString title, QString text, int buttons, int defaultButton) {
     if (QThread::currentThread() != thread()) {
         int result;
-        QMetaObject::invokeMethod(this, "openMessageBox", Qt::BlockingQueuedConnection,
+        BLOCKING_INVOKE_METHOD(this, "openMessageBox",
             Q_RETURN_ARG(int, result),
             Q_ARG(QString, title),
             Q_ARG(QString, text),

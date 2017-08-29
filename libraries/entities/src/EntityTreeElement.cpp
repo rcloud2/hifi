@@ -9,17 +9,18 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
+#include "EntityTreeElement.h"
+
 #include <glm/gtx/transform.hpp>
 
-#include <FBXReader.h>
 #include <GeometryUtil.h>
 #include <OctreeUtils.h>
+#include <Extents.h>
 
 #include "EntitiesLogging.h"
 #include "EntityNodeData.h"
 #include "EntityItemProperties.h"
 #include "EntityTree.h"
-#include "EntityTreeElement.h"
 #include "EntityTypes.h"
 
 EntityTreeElement::EntityTreeElement(unsigned char* octalCode) : OctreeElement() {
@@ -208,7 +209,7 @@ void EntityTreeElement::elementEncodeComplete(EncodeBitstreamParams& params) con
 
             // why would this ever fail???
             // If we've encoding this element before... but we're coming back a second time in an attempt to
-            // encoud our parent... this might happen.
+            // encode our parent... this might happen.
             if (extraEncodeData->contains(childElement.get())) {
                 EntityTreeElementExtraEncodeDataPointer childExtraEncodeData
                     = std::static_pointer_cast<EntityTreeElementExtraEncodeData>((*extraEncodeData)[childElement.get()]);
@@ -884,10 +885,10 @@ EntityItemPointer EntityTreeElement::getEntityWithEntityItemID(const EntityItemI
 void EntityTreeElement::cleanupEntities() {
     withWriteLock([&] {
         foreach(EntityItemPointer entity, _entityItems) {
+            // NOTE: only EntityTreeElement should ever be changing the value of entity->_element
             // NOTE: We explicitly don't delete the EntityItem here because since we only
             // access it by smart pointers, when we remove it from the _entityItems
             // we know that it will be deleted.
-            //delete entity;
             entity->_element = NULL;
         }
         _entityItems.clear();
@@ -902,6 +903,7 @@ bool EntityTreeElement::removeEntityWithEntityItemID(const EntityItemID& id) {
             EntityItemPointer& entity = _entityItems[i];
             if (entity->getEntityItemID() == id) {
                 foundEntity = true;
+                // NOTE: only EntityTreeElement should ever be changing the value of entity->_element
                 entity->_element = NULL;
                 _entityItems.removeAt(i);
                 break;
@@ -917,6 +919,7 @@ bool EntityTreeElement::removeEntityItem(EntityItemPointer entity) {
         numEntries = _entityItems.removeAll(entity);
     });
     if (numEntries > 0) {
+        // NOTE: only EntityTreeElement should ever be changing the value of entity->_element
         assert(entity->_element.get() == this);
         entity->_element = NULL;
         return true;
@@ -981,6 +984,7 @@ int EntityTreeElement::readElementDataFromBuffer(const unsigned char* data, int 
                 //    3) remember the old cube for the entity so we can mark it as dirty
                 if (entityItem) {
                     QString entityScriptBefore = entityItem->getScript();
+                    QUuid parentIDBefore = entityItem->getParentID();
                     QString entityServerScriptsBefore = entityItem->getServerScripts();
                     quint64 entityScriptTimestampBefore = entityItem->getScriptTimestamp();
                     bool bestFitBefore = bestFitEntityBounds(entityItem);
@@ -997,9 +1001,11 @@ int EntityTreeElement::readElementDataFromBuffer(const unsigned char* data, int 
                         if (!bestFitBefore && bestFitAfter) {
                             // This is the case where the entity existed, and is in some element in our tree...
                             if (currentContainingElement.get() != this) {
-                                currentContainingElement->removeEntityItem(entityItem);
+                                // if the currentContainingElement is non-null, remove the entity from it
+                                if (currentContainingElement) {
+                                    currentContainingElement->removeEntityItem(entityItem);
+                                }
                                 addEntityItem(entityItem);
-                                _myTree->setContainingElement(entityItemID, getThisPointer());
                             }
                         }
                     }
@@ -1018,6 +1024,11 @@ int EntityTreeElement::readElementDataFromBuffer(const unsigned char* data, int 
                         _myTree->emitEntityServerScriptChanging(entityItemID, reload); // the entity server script has changed
                     }
 
+                    QUuid parentIDAfter = entityItem->getParentID();
+                    if (parentIDBefore != parentIDAfter) {
+                        _myTree->addToNeedsParentFixupList(entityItem);
+                    }
+
                 } else {
                     entityItem = EntityTypes::constructEntityItem(dataAt, bytesLeftToRead, args);
                     if (entityItem) {
@@ -1025,9 +1036,9 @@ int EntityTreeElement::readElementDataFromBuffer(const unsigned char* data, int 
 
                         // don't add if we've recently deleted....
                         if (!_myTree->isDeletedEntity(entityItem->getID())) {
+                            _myTree->addEntityMapEntry(entityItem);
                             addEntityItem(entityItem); // add this new entity to this elements entities
                             entityItemID = entityItem->getEntityItemID();
-                            _myTree->setContainingElement(entityItemID, getThisPointer());
                             _myTree->postAddEntity(entityItem);
                             if (entityItem->getCreated() == UNKNOWN_CREATED_TIME) {
                                 entityItem->recordCreationTime();

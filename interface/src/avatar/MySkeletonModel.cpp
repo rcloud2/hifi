@@ -13,7 +13,7 @@
 #include "Application.h"
 #include "InterfaceLogging.h"
 
-MySkeletonModel::MySkeletonModel(Avatar* owningAvatar, QObject* parent, RigPointer rig) : SkeletonModel(owningAvatar, parent, rig) {
+MySkeletonModel::MySkeletonModel(Avatar* owningAvatar, QObject* parent) : SkeletonModel(owningAvatar, parent) {
 }
 
 Rig::CharacterControllerState convertCharacterControllerState(CharacterController::State state) {
@@ -46,106 +46,112 @@ void MySkeletonModel::updateRig(float deltaTime, glm::mat4 parentTransform) {
     }
 
     MyAvatar* myAvatar = static_cast<MyAvatar*>(_owningAvatar);
+    assert(myAvatar);
 
-    Rig::HeadParameters headParams;
+    Rig::ControllerParameters params;
+
+    AnimPose avatarToRigPose(glm::vec3(1.0f), Quaternions::Y_180, glm::vec3(0.0f));
 
     // input action is the highest priority source for head orientation.
-    auto avatarHeadPose = myAvatar->getHeadControllerPoseInAvatarFrame();
+    auto avatarHeadPose = myAvatar->getControllerPoseInAvatarFrame(controller::Action::HEAD);
     if (avatarHeadPose.isValid()) {
-        glm::mat4 rigHeadMat = Matrices::Y_180 * createMatFromQuatAndPos(avatarHeadPose.getRotation(), avatarHeadPose.getTranslation());
-        headParams.rigHeadPosition = extractTranslation(rigHeadMat);
-        headParams.rigHeadOrientation = glmExtractRotation(rigHeadMat);
-        headParams.headEnabled = true;
+        AnimPose pose(avatarHeadPose.getRotation(), avatarHeadPose.getTranslation());
+        params.primaryControllerPoses[Rig::PrimaryControllerType_Head] = avatarToRigPose * pose;
+        params.primaryControllerActiveFlags[Rig::PrimaryControllerType_Head] = true;
     } else {
-        if (qApp->isHMDMode()) {
-            // get HMD position from sensor space into world space, and back into rig space
-            glm::mat4 worldHMDMat = myAvatar->getSensorToWorldMatrix() * myAvatar->getHMDSensorMatrix();
-            glm::mat4 rigToWorld = createMatFromQuatAndPos(getRotation(), getTranslation());
-            glm::mat4 worldToRig = glm::inverse(rigToWorld);
-            glm::mat4 rigHMDMat = worldToRig * worldHMDMat;
-            _rig->computeHeadFromHMD(AnimPose(rigHMDMat), headParams.rigHeadPosition, headParams.rigHeadOrientation);
-            headParams.headEnabled = true;
+        // even though full head IK is disabled, the rig still needs the head orientation to rotate the head up and
+        // down in desktop mode.
+        // preMult 180 is necessary to convert from avatar to rig coordinates.
+        // postMult 180 is necessary to convert head from -z forward to z forward.
+        glm::quat headRot = Quaternions::Y_180 * head->getFinalOrientationInLocalFrame() * Quaternions::Y_180;
+        params.primaryControllerPoses[Rig::PrimaryControllerType_Head] = AnimPose(glm::vec3(1.0f), headRot, glm::vec3(0.0f));
+        params.primaryControllerActiveFlags[Rig::PrimaryControllerType_Head] = false;
+    }
+
+    //
+    // primary controller poses, control IK targets directly.
+    //
+
+    static const std::vector<std::pair<controller::Action, Rig::PrimaryControllerType>> primaryControllers = {
+        { controller::Action::LEFT_HAND, Rig::PrimaryControllerType_LeftHand },
+        { controller::Action::RIGHT_HAND, Rig::PrimaryControllerType_RightHand },
+        { controller::Action::HIPS, Rig::PrimaryControllerType_Hips },
+        { controller::Action::LEFT_FOOT, Rig::PrimaryControllerType_LeftFoot },
+        { controller::Action::RIGHT_FOOT, Rig::PrimaryControllerType_RightFoot },
+        { controller::Action::SPINE2, Rig::PrimaryControllerType_Spine2 }
+    };
+
+    for (auto pair : primaryControllers) {
+        auto controllerPose = myAvatar->getControllerPoseInAvatarFrame(pair.first);
+        if (controllerPose.isValid()) {
+            AnimPose pose(controllerPose.getRotation(), controllerPose.getTranslation());
+            params.primaryControllerPoses[pair.second] = avatarToRigPose * pose;
+            params.primaryControllerActiveFlags[pair.second] = true;
         } else {
-            // even though full head IK is disabled, the rig still needs the head orientation to rotate the head up and down in desktop mode.
-            // preMult 180 is necessary to convert from avatar to rig coordinates.
-            // postMult 180 is necessary to convert head from -z forward to z forward.
-            headParams.rigHeadOrientation = Quaternions::Y_180 * head->getFinalOrientationInLocalFrame() * Quaternions::Y_180;
-            headParams.headEnabled = false;
+            params.primaryControllerPoses[pair.second] = AnimPose::identity;
+            params.primaryControllerActiveFlags[pair.second] = false;
         }
     }
 
-    auto avatarHipsPose = myAvatar->getHipsControllerPoseInAvatarFrame();
-    if (avatarHipsPose.isValid()) {
-        glm::mat4 rigHipsMat = Matrices::Y_180 * createMatFromQuatAndPos(avatarHipsPose.getRotation(), avatarHipsPose.getTranslation());
-        headParams.hipsMatrix = rigHipsMat;
-        headParams.hipsEnabled = true;
-    } else {
-        headParams.hipsEnabled = false;
+    //
+    // secondary controller poses, influence the pose of the skeleton indirectly.
+    //
+
+    static const std::vector<std::pair<controller::Action, Rig::SecondaryControllerType>> secondaryControllers = {
+        { controller::Action::LEFT_SHOULDER, Rig::SecondaryControllerType_LeftShoulder },
+        { controller::Action::RIGHT_SHOULDER, Rig::SecondaryControllerType_RightShoulder },
+        { controller::Action::LEFT_ARM, Rig::SecondaryControllerType_LeftArm },
+        { controller::Action::RIGHT_ARM, Rig::SecondaryControllerType_RightArm },
+        { controller::Action::LEFT_FORE_ARM, Rig::SecondaryControllerType_LeftForeArm },
+        { controller::Action::RIGHT_FORE_ARM, Rig::SecondaryControllerType_RightForeArm },
+        { controller::Action::LEFT_UP_LEG, Rig::SecondaryControllerType_LeftUpLeg },
+        { controller::Action::RIGHT_UP_LEG, Rig::SecondaryControllerType_RightUpLeg },
+        { controller::Action::LEFT_LEG, Rig::SecondaryControllerType_LeftLeg },
+        { controller::Action::RIGHT_LEG, Rig::SecondaryControllerType_RightLeg },
+        { controller::Action::LEFT_TOE_BASE, Rig::SecondaryControllerType_LeftToeBase },
+        { controller::Action::RIGHT_TOE_BASE, Rig::SecondaryControllerType_RightToeBase }
+    };
+
+    for (auto pair : secondaryControllers) {
+        auto controllerPose = myAvatar->getControllerPoseInAvatarFrame(pair.first);
+        if (controllerPose.isValid()) {
+            AnimPose pose(controllerPose.getRotation(), controllerPose.getTranslation());
+            params.secondaryControllerPoses[pair.second] = avatarToRigPose * pose;
+            params.secondaryControllerActiveFlags[pair.second] = true;
+        } else {
+            params.secondaryControllerPoses[pair.second] = AnimPose::identity;
+            params.secondaryControllerActiveFlags[pair.second] = false;
+        }
     }
 
-    auto avatarSpine2Pose = myAvatar->getSpine2ControllerPoseInAvatarFrame();
-    if (avatarSpine2Pose.isValid()) {
-        glm::mat4 rigSpine2Mat = Matrices::Y_180 * createMatFromQuatAndPos(avatarSpine2Pose.getRotation(), avatarSpine2Pose.getTranslation());
-        headParams.spine2Matrix = rigSpine2Mat;
-        headParams.spine2Enabled = true;
-    } else {
-        headParams.spine2Enabled = false;
+    params.isTalking = head->getTimeWithoutTalking() <= 1.5f;
+
+    // pass detailed torso k-dops to rig.
+    int hipsJoint = _rig.indexOfJoint("Hips");
+    if (hipsJoint >= 0) {
+        params.hipsShapeInfo = geometry.joints[hipsJoint].shapeInfo;
+    }
+    int spineJoint = _rig.indexOfJoint("Spine");
+    if (spineJoint >= 0) {
+        params.spineShapeInfo = geometry.joints[spineJoint].shapeInfo;
+    }
+    int spine1Joint = _rig.indexOfJoint("Spine1");
+    if (spine1Joint >= 0) {
+        params.spine1ShapeInfo = geometry.joints[spine1Joint].shapeInfo;
+    }
+    int spine2Joint = _rig.indexOfJoint("Spine2");
+    if (spine2Joint >= 0) {
+        params.spine2ShapeInfo = geometry.joints[spine2Joint].shapeInfo;
     }
 
-    headParams.isTalking = head->getTimeWithoutTalking() <= 1.5f;
-
-    _rig->updateFromHeadParameters(headParams, deltaTime);
-
-    Rig::HandAndFeetParameters handAndFeetParams;
-
-    auto leftPose = myAvatar->getLeftHandControllerPoseInAvatarFrame();
-    if (leftPose.isValid()) {
-        handAndFeetParams.isLeftEnabled = true;
-        handAndFeetParams.leftPosition = Quaternions::Y_180 * leftPose.getTranslation();
-        handAndFeetParams.leftOrientation = Quaternions::Y_180 * leftPose.getRotation();
-    } else {
-        handAndFeetParams.isLeftEnabled = false;
-    }
-
-    auto rightPose = myAvatar->getRightHandControllerPoseInAvatarFrame();
-    if (rightPose.isValid()) {
-        handAndFeetParams.isRightEnabled = true;
-        handAndFeetParams.rightPosition = Quaternions::Y_180 * rightPose.getTranslation();
-        handAndFeetParams.rightOrientation = Quaternions::Y_180 * rightPose.getRotation();
-    } else {
-        handAndFeetParams.isRightEnabled = false;
-    }
-
-    auto leftFootPose = myAvatar->getLeftFootControllerPoseInAvatarFrame();
-    if (leftFootPose.isValid()) {
-        handAndFeetParams.isLeftFootEnabled = true;
-        handAndFeetParams.leftFootPosition = Quaternions::Y_180 * leftFootPose.getTranslation();
-        handAndFeetParams.leftFootOrientation = Quaternions::Y_180 * leftFootPose.getRotation();
-    } else {
-        handAndFeetParams.isLeftFootEnabled = false;
-    }
-
-    auto rightFootPose = myAvatar->getRightFootControllerPoseInAvatarFrame();
-    if (rightFootPose.isValid()) {
-        handAndFeetParams.isRightFootEnabled = true;
-        handAndFeetParams.rightFootPosition = Quaternions::Y_180 * rightFootPose.getTranslation();
-        handAndFeetParams.rightFootOrientation = Quaternions::Y_180 * rightFootPose.getRotation();
-    } else {
-        handAndFeetParams.isRightFootEnabled = false;
-    }
-
-    handAndFeetParams.bodyCapsuleRadius = myAvatar->getCharacterController()->getCapsuleRadius();
-    handAndFeetParams.bodyCapsuleHalfHeight = myAvatar->getCharacterController()->getCapsuleHalfHeight();
-    handAndFeetParams.bodyCapsuleLocalOffset = myAvatar->getCharacterController()->getCapsuleLocalOffset();
-
-    _rig->updateFromHandAndFeetParameters(handAndFeetParams, deltaTime);
+    _rig.updateFromControllerParameters(params, deltaTime);
 
     Rig::CharacterControllerState ccState = convertCharacterControllerState(myAvatar->getCharacterController()->getState());
 
     auto velocity = myAvatar->getLocalVelocity();
     auto position = myAvatar->getLocalPosition();
     auto orientation = myAvatar->getLocalOrientation();
-    _rig->computeMotionAnimationState(deltaTime, position, velocity, orientation, ccState);
+    _rig.computeMotionAnimationState(deltaTime, position, velocity, orientation, ccState);
 
     // evaluate AnimGraph animation and update jointStates.
     Model::updateRig(deltaTime, parentTransform);
@@ -158,6 +164,108 @@ void MySkeletonModel::updateRig(float deltaTime, glm::mat4 parentTransform) {
     eyeParams.leftEyeJointIndex = geometry.leftEyeJointIndex;
     eyeParams.rightEyeJointIndex = geometry.rightEyeJointIndex;
 
-    _rig->updateFromEyeParameters(eyeParams);
+    _rig.updateFromEyeParameters(eyeParams);
+
+    updateFingers();
 }
 
+
+void MySkeletonModel::updateFingers() {
+
+    MyAvatar* myAvatar = static_cast<MyAvatar*>(_owningAvatar);
+
+    static std::vector<std::vector<std::pair<controller::Action, QString>>> fingerChains = {
+        {
+            { controller::Action::LEFT_HAND, "LeftHand" },
+            { controller::Action::LEFT_HAND_THUMB1, "LeftHandThumb1" },
+            { controller::Action::LEFT_HAND_THUMB2, "LeftHandThumb2" },
+            { controller::Action::LEFT_HAND_THUMB3, "LeftHandThumb3" },
+            { controller::Action::LEFT_HAND_THUMB4, "LeftHandThumb4" }
+        },
+        {
+            { controller::Action::LEFT_HAND, "LeftHand" },
+            { controller::Action::LEFT_HAND_INDEX1, "LeftHandIndex1" },
+            { controller::Action::LEFT_HAND_INDEX2, "LeftHandIndex2" },
+            { controller::Action::LEFT_HAND_INDEX3, "LeftHandIndex3" },
+            { controller::Action::LEFT_HAND_INDEX4, "LeftHandIndex4" }
+        },
+        {
+            { controller::Action::LEFT_HAND, "LeftHand" },
+            { controller::Action::LEFT_HAND_MIDDLE1, "LeftHandMiddle1" },
+            { controller::Action::LEFT_HAND_MIDDLE2, "LeftHandMiddle2" },
+            { controller::Action::LEFT_HAND_MIDDLE3, "LeftHandMiddle3" },
+            { controller::Action::LEFT_HAND_MIDDLE4, "LeftHandMiddle4" }
+        },
+        {
+            { controller::Action::LEFT_HAND, "LeftHand" },
+            { controller::Action::LEFT_HAND_RING1, "LeftHandRing1" },
+            { controller::Action::LEFT_HAND_RING2, "LeftHandRing2" },
+            { controller::Action::LEFT_HAND_RING3, "LeftHandRing3" },
+            { controller::Action::LEFT_HAND_RING4, "LeftHandRing4" }
+        },
+        {
+            { controller::Action::LEFT_HAND, "LeftHand" },
+            { controller::Action::LEFT_HAND_PINKY1, "LeftHandPinky1" },
+            { controller::Action::LEFT_HAND_PINKY2, "LeftHandPinky2" },
+            { controller::Action::LEFT_HAND_PINKY3, "LeftHandPinky3" },
+            { controller::Action::LEFT_HAND_PINKY4, "LeftHandPinky4" }
+        },
+        {
+            { controller::Action::RIGHT_HAND, "RightHand" },
+            { controller::Action::RIGHT_HAND_THUMB1, "RightHandThumb1" },
+            { controller::Action::RIGHT_HAND_THUMB2, "RightHandThumb2" },
+            { controller::Action::RIGHT_HAND_THUMB3, "RightHandThumb3" },
+            { controller::Action::RIGHT_HAND_THUMB4, "RightHandThumb4" }
+        },
+        {
+            { controller::Action::RIGHT_HAND, "RightHand" },
+            { controller::Action::RIGHT_HAND_INDEX1, "RightHandIndex1" },
+            { controller::Action::RIGHT_HAND_INDEX2, "RightHandIndex2" },
+            { controller::Action::RIGHT_HAND_INDEX3, "RightHandIndex3" },
+            { controller::Action::RIGHT_HAND_INDEX4, "RightHandIndex4" }
+        },
+        {
+            { controller::Action::RIGHT_HAND, "RightHand" },
+            { controller::Action::RIGHT_HAND_MIDDLE1, "RightHandMiddle1" },
+            { controller::Action::RIGHT_HAND_MIDDLE2, "RightHandMiddle2" },
+            { controller::Action::RIGHT_HAND_MIDDLE3, "RightHandMiddle3" },
+            { controller::Action::RIGHT_HAND_MIDDLE4, "RightHandMiddle4" }
+        },
+        {
+            { controller::Action::RIGHT_HAND, "RightHand" },
+            { controller::Action::RIGHT_HAND_RING1, "RightHandRing1" },
+            { controller::Action::RIGHT_HAND_RING2, "RightHandRing2" },
+            { controller::Action::RIGHT_HAND_RING3, "RightHandRing3" },
+            { controller::Action::RIGHT_HAND_RING4, "RightHandRing4" }
+        },
+        {
+            { controller::Action::RIGHT_HAND, "RightHand" },
+            { controller::Action::RIGHT_HAND_PINKY1, "RightHandPinky1" },
+            { controller::Action::RIGHT_HAND_PINKY2, "RightHandPinky2" },
+            { controller::Action::RIGHT_HAND_PINKY3, "RightHandPinky3" },
+            { controller::Action::RIGHT_HAND_PINKY4, "RightHandPinky4" }
+        }
+    };
+
+    const float CONTROLLER_PRIORITY = 2.0f;
+
+    for (auto& chain : fingerChains) {
+        glm::quat prevAbsRot = Quaternions::IDENTITY;
+        for (auto& link : chain) {
+            int index = _rig.indexOfJoint(link.second);
+            if (index >= 0) {
+                auto pose = myAvatar->getControllerPoseInSensorFrame(link.first);
+                if (pose.valid) {
+                    glm::quat relRot = glm::inverse(prevAbsRot) * pose.getRotation();
+                    // only set the rotation for the finger joints, not the hands.
+                    if (link.first != controller::Action::LEFT_HAND && link.first != controller::Action::RIGHT_HAND) {
+                        _rig.setJointRotation(index, true, relRot, CONTROLLER_PRIORITY);
+                    }
+                    prevAbsRot = pose.getRotation();
+                } else {
+                    _rig.clearJointAnimationPriority(index);
+                }
+            }
+        }
+    }
+}

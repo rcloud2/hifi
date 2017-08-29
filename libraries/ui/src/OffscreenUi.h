@@ -21,9 +21,9 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QInputDialog>
 
-#include <gl/OffscreenQmlSurface.h>
 #include <DependencyManager.h>
 
+#include "ui/OffscreenQmlSurface.h"
 #include "OffscreenQmlElement.h"
 
 class VrMenu;
@@ -36,7 +36,7 @@ class OffscreenUi : public OffscreenQmlSurface, public Dependency {
     friend class VrMenu;
 public:
     OffscreenUi();
-    virtual void create(QOpenGLContext* context) override;
+    virtual void create() override;
     void createDesktop(const QUrl& url);
     void show(const QUrl& url, const QString& name, std::function<void(QQmlContext*, QObject*)> f = [](QQmlContext*, QObject*) {});
     void hide(const QString& name);

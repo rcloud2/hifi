@@ -39,6 +39,11 @@ typedef QMultiHash<QUuid, WalletTransaction*> TransactionHash;
 using Subnet = QPair<QHostAddress, int>;
 using SubnetList = std::vector<Subnet>;
 
+enum ReplicationServerDirection {
+    Upstream,
+    Downstream
+};
+
 class DomainServer : public QCoreApplication, public HTTPSRequestHandler {
     Q_OBJECT
 public:
@@ -66,6 +71,7 @@ public slots:
 
     void restart();
 
+private slots:
     void processRequestAssignmentPacket(QSharedPointer<ReceivedMessage> packet);
     void processListRequestPacket(QSharedPointer<ReceivedMessage> packet, SharedNodePointer sendingNode);
     void processNodeJSONStatsPacket(QSharedPointer<ReceivedMessage> packetList, SharedNodePointer sendingNode);
@@ -74,7 +80,6 @@ public slots:
     void processICEServerHeartbeatDenialPacket(QSharedPointer<ReceivedMessage> message);
     void processICEServerHeartbeatACK(QSharedPointer<ReceivedMessage> message);
 
-private slots:
     void setupPendingAssignmentCredits();
     void sendPendingTransactionsToServer();
 
@@ -102,6 +107,13 @@ private slots:
 
     void handleOctreeFileReplacement(QByteArray octreeFile);
 
+    void updateReplicatedNodes();
+    void updateDownstreamNodes();
+    void updateUpstreamNodes();
+
+    void tokenGrantFinished();
+    void profileRequestFinished();
+
 signals:
     void iceServerChanged();
     void userConnected();
@@ -117,7 +129,7 @@ private:
 
     void getTemporaryName(bool force = false);
 
-    static bool packetVersionMatch(const udt::Packet& packet);
+    static bool isPacketVerified(const udt::Packet& packet);
 
     bool resetAccountManagerAccessToken();
 
@@ -161,11 +173,19 @@ private:
     QJsonObject jsonForSocket(const HifiSockAddr& socket);
     QJsonObject jsonObjectForNode(const SharedNodePointer& node);
 
+    bool shouldReplicateNode(const Node& node);
+
     void setupGroupCacheRefresh();
 
     QString pathForRedirect(QString path = QString()) const;
 
+    void updateReplicationNodes(ReplicationServerDirection direction);
+
+    HTTPSConnection* connectionFromReplyWithState(QNetworkReply* reply);
+
     SubnetList _acSubnetWhitelist;
+
+    std::vector<QString> _replicatedUsernames;
 
     DomainGatekeeper _gatekeeper;
 
@@ -220,6 +240,8 @@ private:
 
     bool _sendICEServerAddressToMetaverseAPIInProgress { false };
     bool _sendICEServerAddressToMetaverseAPIRedo { false };
+
+    QHash<QUuid, QPointer<HTTPSConnection>> _pendingOAuthConnections;
 };
 
 

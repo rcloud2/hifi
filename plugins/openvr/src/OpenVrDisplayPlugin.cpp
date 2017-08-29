@@ -7,6 +7,9 @@
 //
 #include "OpenVrDisplayPlugin.h"
 
+// Odd ordering of header is required to avoid 'macro redinition warnings'
+#include <AudioClient.h>
+
 #include <QtCore/QThread>
 #include <QtCore/QLoggingCategory>
 #include <QtCore/QFileInfo>
@@ -279,7 +282,7 @@ public:
                 static const vr::VRTextureBounds_t leftBounds{ 0, 0, 0.5f, 1 };
                 static const vr::VRTextureBounds_t rightBounds{ 0.5f, 0, 1, 1 };
 
-                vr::Texture_t texture{ (void*)_colors[currentColorBuffer], vr::TextureType_OpenGL, vr::ColorSpace_Auto };
+                vr::Texture_t texture{ (void*)(uintptr_t)_colors[currentColorBuffer], vr::TextureType_OpenGL, vr::ColorSpace_Auto };
                 vr::VRCompositor()->Submit(vr::Eye_Left, &texture, &leftBounds);
                 vr::VRCompositor()->Submit(vr::Eye_Right, &texture, &rightBounds);
                 _plugin._presentRate.increment();
@@ -591,9 +594,6 @@ bool OpenVrDisplayPlugin::beginFrameRender(uint32_t frameIndex) {
     }
 
     withNonPresentThreadLock([&] {
-        _uiModelTransform = DependencyManager::get<CompositorHelper>()->getModelTransform();
-        // Make controller poses available to the presentation thread
-        _handPoses = handPoses;
         _frameInfos[frameIndex] = _currentRenderFrameInfo;
     });
     return Parent::beginFrameRender(frameIndex);
@@ -640,7 +640,7 @@ void OpenVrDisplayPlugin::hmdPresent() {
         _submitThread->waitForPresent();
     } else {
         GLuint glTexId = getGLBackend()->getTextureID(_compositeFramebuffer->getRenderBuffer(0));
-        vr::Texture_t vrTexture { (void*)glTexId, vr::TextureType_OpenGL, vr::ColorSpace_Auto };
+        vr::Texture_t vrTexture { (void*)(uintptr_t)glTexId, vr::TextureType_OpenGL, vr::ColorSpace_Auto };
         vr::VRCompositor()->Submit(vr::Eye_Left, &vrTexture, &OPENVR_TEXTURE_BOUNDS_LEFT);
         vr::VRCompositor()->Submit(vr::Eye_Right, &vrTexture, &OPENVR_TEXTURE_BOUNDS_RIGHT);
         vr::VRCompositor()->PostPresentHandoff();
@@ -713,3 +713,30 @@ bool OpenVrDisplayPlugin::isKeyboardVisible() {
 int OpenVrDisplayPlugin::getRequiredThreadCount() const { 
     return Parent::getRequiredThreadCount() + (_threadedSubmit ? 1 : 0);
 }
+
+QString OpenVrDisplayPlugin::getPreferredAudioInDevice() const {
+    QString device = getVrSettingString(vr::k_pch_audio_Section, vr::k_pch_audio_OnPlaybackDevice_String);
+    if (!device.isEmpty()) {
+        static const WCHAR INIT = 0;
+        size_t size = device.size() + 1;
+        std::vector<WCHAR> deviceW;
+        deviceW.assign(size, INIT);
+        device.toWCharArray(deviceW.data());
+        device = AudioClient::getWinDeviceName(deviceW.data());
+    }
+    return device;
+}
+
+QString OpenVrDisplayPlugin::getPreferredAudioOutDevice() const {
+    QString device = getVrSettingString(vr::k_pch_audio_Section, vr::k_pch_audio_OnRecordDevice_String);
+    if (!device.isEmpty()) {
+        static const WCHAR INIT = 0;
+        size_t size = device.size() + 1;
+        std::vector<WCHAR> deviceW;
+        deviceW.assign(size, INIT);
+        device.toWCharArray(deviceW.data());
+        device = AudioClient::getWinDeviceName(deviceW.data());
+    }
+    return device;
+}
+

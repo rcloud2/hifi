@@ -24,7 +24,6 @@ Rectangle {
     property string title: "Asset Browser"
     property bool keyboardRaised: false
 
-    property var eventBridge;
     signal sendToScript(var message);
     property bool isHMD: false
 
@@ -38,6 +37,7 @@ Rectangle {
     property var assetProxyModel: Assets.proxyModel;
     property var assetMappingsModel: Assets.mappingModel;
     property var currentDirectory;
+    property var selectedItems: treeView.selection.selectedIndexes.length;
 
     Settings {
         category: "Overlay.AssetServer"
@@ -120,10 +120,22 @@ Rectangle {
 
     function canAddToWorld(path) {
         var supportedExtensions = [/\.fbx\b/i, /\.obj\b/i];
+        
+        if (selectedItems > 1) {
+            return false;
+        }
 
         return supportedExtensions.reduce(function(total, current) {
             return total | new RegExp(current).test(path);
         }, false);
+    }
+    
+    function canRename() {    
+        if (treeView.selection.hasSelection && selectedItems == 1) {
+            return true;
+        } else {
+            return false;
+        }
     }
 
     function clear() {
@@ -153,13 +165,17 @@ Rectangle {
         var SHAPE_TYPE_SIMPLE_HULL = 1;
         var SHAPE_TYPE_SIMPLE_COMPOUND = 2;
         var SHAPE_TYPE_STATIC_MESH = 3;
-
+        var SHAPE_TYPE_BOX = 4;
+        var SHAPE_TYPE_SPHERE = 5;
+        
         var SHAPE_TYPES = [];
         SHAPE_TYPES[SHAPE_TYPE_NONE] = "No Collision";
         SHAPE_TYPES[SHAPE_TYPE_SIMPLE_HULL] = "Basic - Whole model";
         SHAPE_TYPES[SHAPE_TYPE_SIMPLE_COMPOUND] = "Good - Sub-meshes";
         SHAPE_TYPES[SHAPE_TYPE_STATIC_MESH] = "Exact - All polygons";
-
+        SHAPE_TYPES[SHAPE_TYPE_BOX] = "Box";
+        SHAPE_TYPES[SHAPE_TYPE_SPHERE] = "Sphere";
+        
         var SHAPE_TYPE_DEFAULT = SHAPE_TYPE_STATIC_MESH;
         var DYNAMIC_DEFAULT = false;
         var prompt = tabletRoot.customInputDialog({
@@ -179,7 +195,7 @@ Rectangle {
                                                            SHAPE_TYPE_STATIC_MESH
                                                        ],
                                                        checkStateOnDisable: false,
-                                                       warningOnDisable: "Models with 'Exact' automatic collisions cannot be dynamic"
+                                                       warningOnDisable: "Models with 'Exact' automatic collisions cannot be dynamic, and should not be used as floors"
                                                    }
                                                });
 
@@ -197,6 +213,12 @@ Rectangle {
                     break;
                 case SHAPE_TYPE_STATIC_MESH:
                     shapeType = "static-mesh";
+                    break;
+                case SHAPE_TYPE_BOX:
+                    shapeType = "box";
+                    break;
+                case SHAPE_TYPE_SPHERE:
+                    shapeType = "sphere";
                     break;
                 default:
                     shapeType = "none";
@@ -291,23 +313,37 @@ Rectangle {
         });
     }
     function deleteFile(index) {
+        var path = [];
+        
         if (!index) {
-            index = treeView.selection.currentIndex;
+            for (var i = 0; i < selectedItems; i++) {
+                 treeView.selection.setCurrentIndex(treeView.selection.selectedIndexes[i], 0x100);
+                 index = treeView.selection.currentIndex;
+                 path[i] = assetProxyModel.data(index, 0x100);                  
+            }
         }
-        var path = assetProxyModel.data(index, 0x100);
+        
         if (!path) {
             return;
         }
 
+        var modalMessage = "";
+        var items = selectedItems.toString();
         var isFolder = assetProxyModel.data(treeView.selection.currentIndex, 0x101);
         var typeString = isFolder ? 'folder' : 'file';
+        
+        if (selectedItems > 1) {
+            modalMessage = "You are about to delete " + items + " items \nDo you want to continue?";
+        } else {
+            modalMessage = "You are about to delete the following " + typeString + ":\n" + path + "\nDo you want to continue?";
+        }
 
         var object = tabletRoot.messageBox({
                                             icon: hifi.icons.question,
                                             buttons: OriginalDialogs.StandardButton.Yes + OriginalDialogs.StandardButton.No,
                                             defaultButton: OriginalDialogs.StandardButton.Yes,
                                             title: "Delete",
-                                            text: "You are about to delete the following " + typeString + ":\n" + path + "\nDo you want to continue?"
+                                            text: modalMessage
                                         });
         object.selected.connect(function(button) {
             if (button === OriginalDialogs.StandardButton.Yes) {
@@ -460,7 +496,7 @@ Rectangle {
                     width: 80
 
                     onClicked: root.renameFile()
-                    enabled: treeView.selection.hasSelection
+                    enabled: canRename()
                 }
 
                 HifiControls.Button {
@@ -507,7 +543,7 @@ Rectangle {
         }
         HifiControls.Tree {
             id: treeView
-            height: 430
+            height: 290
             anchors.leftMargin: hifi.dimensions.contentMargin.x + 2  // Extra for border
             anchors.rightMargin: hifi.dimensions.contentMargin.x + 2  // Extra for border
             anchors.left: parent.left
@@ -516,6 +552,7 @@ Rectangle {
             treeModel: assetProxyModel
             canEdit: true
             colorScheme: root.colorScheme
+            selectionMode: SelectionMode.ExtendedSelection
 
             modifyEl: renameEl
 

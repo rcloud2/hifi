@@ -39,6 +39,11 @@ public:
 
     explicit GL45Backend(bool syncCache) : Parent(syncCache) {}
     GL45Backend() : Parent() {}
+    virtual ~GL45Backend() {
+        // call resetStages here rather than in ~GLBackend dtor because it will call releaseResourceBuffer
+        // which is pure virtual from GLBackend's dtor.
+        resetStages();
+    }
 
     static const std::string GL45_VERSION;
     const std::string& getVersion() const override { return GL45_VERSION; }
@@ -50,8 +55,8 @@ public:
     protected:
         GL45Texture(const std::weak_ptr<GLBackend>& backend, const Texture& texture);
         void generateMips() const override;
-        void copyMipFaceLinesFromTexture(uint16_t mip, uint8_t face, const uvec3& size, uint32_t yOffset, GLenum internalFormat, GLenum format, GLenum type, Size sourceSize, const void* sourcePointer) const override;
-        virtual void syncSampler() const;
+        Size copyMipFaceLinesFromTexture(uint16_t mip, uint8_t face, const uvec3& size, uint32_t yOffset, GLenum internalFormat, GLenum format, GLenum type, Size sourceSize, const void* sourcePointer) const override;
+        void syncSampler() const override;
     };
 
     //
@@ -86,6 +91,7 @@ public:
         friend class GL45Backend;
     protected:
         GL45StrictResourceTexture(const std::weak_ptr<GLBackend>& backend, const Texture& texture);
+        ~GL45StrictResourceTexture();
     };
 
     //
@@ -101,8 +107,12 @@ public:
     protected:
         GL45VariableAllocationTexture(const std::weak_ptr<GLBackend>& backend, const Texture& texture);
         ~GL45VariableAllocationTexture();
+
         Size size() const override { return _size; }
-        Size _size { 0 };
+
+        Size copyMipFaceLinesFromTexture(uint16_t mip, uint8_t face, const uvec3& size, uint32_t yOffset, GLenum internalFormat, GLenum format, GLenum type, Size sourceSize, const void* sourcePointer) const override;
+        void copyTextureMipsInGPUMem(GLuint srcId, GLuint destId, uint16_t srcMipOffset, uint16_t destMipOffset, uint16_t populatedMips) override;
+
     };
 
     class GL45ResourceTexture : public GL45VariableAllocationTexture {
@@ -115,9 +125,10 @@ public:
         void promote() override;
         void demote() override;
         void populateTransferQueue() override;
+        
 
         void allocateStorage(uint16 mip);
-        void copyMipsFromTexture();
+        Size copyMipsFromTexture();
     };
 
 #if 0

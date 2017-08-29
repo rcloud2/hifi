@@ -14,21 +14,22 @@ Script.include(Script.resolvePath("../libraries/utils.js"));
 Script.include(Script.resolvePath("../libraries/controllers.js"));
 Script.include(Script.resolvePath("../libraries/Xform.js"));
 
-var VEC3_ZERO = {x: 0, y: 0, z: 0};
-var X_AXIS = {x: 1, y: 0, z: 0};
 var Y_AXIS = {x: 0, y: 1, z: 0};
 var DEFAULT_DPI = 34;
 var DEFAULT_WIDTH = 0.4375;
 var DEFAULT_VERTICAL_FIELD_OF_VIEW = 45; // degrees
 var SENSOR_TO_ROOM_MATRIX = -2;
 var CAMERA_MATRIX = -7;
-var ROT_Y_180 = {x: 0, y: 1, z: 0, w: 0};
-var ROT_IDENT = {x: 0, y: 0, z: 0, w: 1};
+var ROT_Y_180 = {x: 0.0, y: 1.0, z: 0, w: 0};
+var ROT_LANDSCAPE = {x: 1.0, y: 1.0, z: 0, w: 0};
+var ROT_LANDSCAPE_WINDOW = {x: 0.0, y: 0.0, z: 0.0, w: 0};
 var TABLET_TEXTURE_RESOLUTION = { x: 480, y: 706 };
 var INCHES_TO_METERS = 1 / 39.3701;
 var AVATAR_SELF_ID = "{00000000-0000-0000-0000-000000000001}";
 
 var NO_HANDS = -1;
+var DELAY_FOR_30HZ = 33; // milliseconds
+
 
 // will need to be recaclulated if dimensions of fbx model change.
 var TABLET_NATURAL_DIMENSIONS = {x: 33.797, y: 50.129, z: 2.269};
@@ -41,7 +42,7 @@ var LOCAL_TABLET_MODEL_PATH = Script.resourcesPath() + "meshes/tablet-with-home-
 // returns object with two fields:
 //    * position - position in front of the user
 //    * rotation - rotation of entity so it faces the user.
-function calcSpawnInfo(hand, height) {
+function calcSpawnInfo(hand, tabletHeight, landscape) {
     var finalPosition;
 
     var headPos = (HMD.active && Camera.mode === "first person") ? HMD.position : Camera.position;
@@ -51,31 +52,36 @@ function calcSpawnInfo(hand, height) {
         hand = NO_HANDS;
     }
 
+    var handController = null;
     if (HMD.active && hand !== NO_HANDS) {
-        var handController = getControllerWorldLocation(hand, true);
+        handController = getControllerWorldLocation(hand, true);
+    }
 
-        var TABLET_UP_OFFSET = 0.1;
-        var TABLET_FORWARD_OFFSET = 0.1;
-        var normal = Vec3.multiplyQbyV(handController.rotation, {x: 0, y: -1, z: 0});
-        var pitch = Math.asin(normal.y);
-        var MAX_PITCH = Math.PI / 4;
-        if (pitch < -MAX_PITCH) {
-            pitch = -MAX_PITCH;
-        } else if (pitch > MAX_PITCH) {
-            pitch = MAX_PITCH;
+    if (handController && handController.valid) {
+        // Orient tablet per hand pitch and yaw.
+        // Angle it back similar to holding it like a book.
+        // Move tablet up so that hand is at bottom.
+        // Move tablet back so that hand is in front.
+
+        var position = handController.position;
+        var rotation = handController.rotation;
+
+        if (hand === Controller.Standard.LeftHand) {
+            rotation = Quat.multiply(rotation, Quat.fromPitchYawRollDegrees(0, 90, 0));
+        } else {
+            rotation = Quat.multiply(rotation, Quat.fromPitchYawRollDegrees(0, -90, 0));
         }
+        var normal = Vec3.multiplyQbyV(rotation, Vec3.UNIT_NEG_Y);
+        var lookAt = Quat.lookAt(Vec3.ZERO, normal, Vec3.multiplyQbyV(MyAvatar.orientation, Vec3.UNIT_Y));
+        var TABLET_RAKE_ANGLE = 30;
+        rotation = Quat.multiply(Quat.angleAxis(TABLET_RAKE_ANGLE, Vec3.multiplyQbyV(lookAt, Vec3.UNIT_X)), lookAt);
 
-        // rebuild normal from pitch and heading.
-        var heading = Math.atan2(normal.z, normal.x);
-        normal = {x: Math.cos(heading), y: Math.sin(pitch), z: Math.sin(heading)};
-
-        var position = Vec3.sum(handController.position, {x: 0, y: TABLET_UP_OFFSET, z: 0});
-        var rotation = Quat.lookAt({x: 0, y: 0, z: 0}, normal, Y_AXIS);
-        var offset = Vec3.multiplyQbyV(rotation, {x: 0, y: height / 2, z: TABLET_FORWARD_OFFSET});
+        var RELATIVE_SPAWN_OFFSET = { x: 0, y: 0.6, z: 0.1 };
+        position = Vec3.sum(position, Vec3.multiplyQbyV(rotation, Vec3.multiply(tabletHeight, RELATIVE_SPAWN_OFFSET)));
 
         return {
-            position: Vec3.sum(offset, position),
-            rotation: rotation
+            position: position,
+            rotation: landscape ? Quat.multiply(rotation, { x: 0.0, y: 0.0, z: 0.707, w: 0.707 }) : rotation
         };
     } else {
         var forward = Quat.getForward(headRot);
@@ -83,7 +89,7 @@ function calcSpawnInfo(hand, height) {
         var orientation = Quat.lookAt({x: 0, y: 0, z: 0}, forward, {x: 0, y: 1, z: 0});
         return {
             position: finalPosition,
-            rotation: Quat.multiply(orientation, {x: 0, y: 1, z: 0, w: 0})
+            rotation: landscape ? Quat.multiply(orientation, ROT_LANDSCAPE) : Quat.multiply(orientation, ROT_Y_180)
         };
     }
 }
@@ -161,7 +167,6 @@ WebTablet = function (url, width, dpi, hand, clientOnly, location, visible) {
         parentID: this.tabletEntityID,
         parentJointIndex: -1,
         showKeyboardFocusHighlight: false,
-        isAA: HMD.active,
         visible: visible
     });
 
@@ -243,29 +248,29 @@ WebTablet = function (url, width, dpi, hand, clientOnly, location, visible) {
 };
 
 WebTablet.prototype.getDimensions = function() {
-    if (this.landscape) {
-        return { x: this.width * 2, y: this.height, z: this.depth };
-    } else {
-        return { x: this.width, y: this.height, z: this.depth };
-    }
+    return { x: this.width, y: this.height, z: this.depth };
 };
 
 WebTablet.prototype.getTabletTextureResolution = function() {
     if (this.landscape) {
-        return { x: TABLET_TEXTURE_RESOLUTION.x * 2, y: TABLET_TEXTURE_RESOLUTION.y };
+        return { x: TABLET_TEXTURE_RESOLUTION.y , y: TABLET_TEXTURE_RESOLUTION.x };
     } else {
         return TABLET_TEXTURE_RESOLUTION;
     }
 };
 
 WebTablet.prototype.setLandscape = function(newLandscapeValue) {
-    if (this.landscape == newLandscapeValue) {
+    if (this.landscape === newLandscapeValue) {
         return;
     }
+
     this.landscape = newLandscapeValue;
-    Overlays.editOverlay(this.tabletEntityID, { dimensions: this.getDimensions() });
+    Overlays.editOverlay(this.tabletEntityID,
+                         { rotation: this.landscape ? Quat.multiply(Camera.orientation, ROT_LANDSCAPE) :
+                                                      Quat.multiply(Camera.orientation, ROT_Y_180) });
     Overlays.editOverlay(this.webOverlayID, {
-        resolution: this.getTabletTextureResolution()
+        resolution: this.getTabletTextureResolution(),
+        rotation: Quat.multiply(Camera.orientation, ROT_LANDSCAPE_WINDOW)
     });
 };
 
@@ -407,7 +412,7 @@ WebTablet.prototype.calculateWorldAttitudeRelativeToCamera = function (windowPos
 
     return {
         position: worldMousePosition,
-        rotation: Quat.multiply(Camera.orientation, ROT_Y_180)
+        rotation: this.landscape ? Quat.multiply(Camera.orientation, ROT_LANDSCAPE) : Quat.multiply(Camera.orientation, ROT_Y_180)
     };
 };
 
@@ -418,7 +423,7 @@ WebTablet.prototype.calculateTabletAttachmentProperties = function (hand, useMou
         tabletProperties.parentJointIndex = SENSOR_TO_ROOM_MATRIX;
 
         // compute the appropriate position of the tablet, near the hand controller that was used to spawn it.
-        var spawnInfo = calcSpawnInfo(hand, this.height);
+        var spawnInfo = calcSpawnInfo(hand, this.height, this.landscape);
         tabletProperties.position = spawnInfo.position;
         tabletProperties.rotation = spawnInfo.rotation;
     } else {
@@ -447,10 +452,6 @@ WebTablet.prototype.onHmdChanged = function () {
     this.calculateTabletAttachmentProperties(NO_HANDS, false, tabletProperties);
     // TODO -- is this still needed?
     // Entities.editEntity(this.tabletEntityID, tabletProperties);
-
-    // Full scene FXAA should be disabled on the overlay when the tablet in desktop mode.
-    // This should make the text more readable.
-    Overlays.editOverlay(this.webOverlayID, { isAA: HMD.active });
 };
 
 WebTablet.prototype.pickle = function () {
@@ -554,9 +555,29 @@ function rayIntersectPlane(planePosition, planeNormal, rayStart, rayDirection) {
     }
 }
 
+WebTablet.prototype.scheduleMouseMoveProcessor = function() {
+    var _this = this;
+    if (!this.moveEventTimer) {
+        this.moveEventTimer = Script.setTimeout(function() {
+            _this.mouseMoveProcessor();
+        }, DELAY_FOR_30HZ);
+    }
+};
+
 WebTablet.prototype.mouseMoveEvent = function (event) {
     if (this.dragging) {
-        var pickRay = Camera.computePickRay(event.x, event.y);
+        this.currentMouse = {
+            x: event.x,
+            y: event.y
+        };
+        this.scheduleMouseMoveProcessor();
+    }
+};
+
+WebTablet.prototype.mouseMoveProcessor = function () {
+    this.moveEventTimer = null;
+    if (this.dragging) {
+        var pickRay = Camera.computePickRay(this.currentMouse.x, this.currentMouse.y);
 
         // transform pickRay into camera local coordinates
         var invCameraXform = new Xform(Camera.orientation, Camera.position).inv();
@@ -575,6 +596,7 @@ WebTablet.prototype.mouseMoveEvent = function (event) {
                 localPosition: localPosition
             });
         }
+        this.scheduleMouseMoveProcessor();
     }
 };
 

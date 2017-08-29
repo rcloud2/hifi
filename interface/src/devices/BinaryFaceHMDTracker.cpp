@@ -216,7 +216,7 @@ void BinaryFaceHMDTracker::update(float deltaTime) {
     if (qApp->isHMDMode())
     {
         auto myAvatar = DependencyManager::get<AvatarManager>()->getMyAvatar();
-        glm::mat4 hmdSensorMatrix = qApp->getActiveDisplayPlugin()->getHeadPose();
+        glm::mat4 hmdSensorMatrix = myAvatar->getHMDSensorMatrix();
         _headTranslation = extractTranslation(hmdSensorMatrix);
         _headTranslation.x *= -1.0f;
         _headRotation = extractRotation(hmdSensorMatrix);

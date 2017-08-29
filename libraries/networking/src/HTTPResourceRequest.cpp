@@ -17,6 +17,7 @@
 #include <QMetaEnum>
 
 #include <SharedUtil.h>
+#include <StatTracker.h>
 
 #include "NetworkAccessManager.h"
 #include "NetworkLogging.h"
@@ -49,6 +50,8 @@ void HTTPResourceRequest::cleanupTimer() {
 }
 
 void HTTPResourceRequest::doSend() {
+    DependencyManager::get<StatTracker>()->incrementStat(STAT_HTTP_REQUEST_STARTED);
+
     QNetworkRequest networkRequest(_url);
     networkRequest.setAttribute(QNetworkRequest::FollowRedirectsAttribute, true);
     networkRequest.setHeader(QNetworkRequest::UserAgentHeader, HIGH_FIDELITY_USER_AGENT);
@@ -178,6 +181,17 @@ void HTTPResourceRequest::onRequestFinished() {
     
     _state = Finished;
     emit finished();
+
+    auto statTracker = DependencyManager::get<StatTracker>();
+    if (_result == Success) {
+        statTracker->incrementStat(STAT_HTTP_REQUEST_SUCCESS);
+
+        if (loadedFromCache()) {
+            statTracker->incrementStat(STAT_HTTP_REQUEST_CACHE);
+        }
+    } else {
+        statTracker->incrementStat(STAT_HTTP_REQUEST_FAILED);
+    }
 }
 
 void HTTPResourceRequest::onDownloadProgress(qint64 bytesReceived, qint64 bytesTotal) {
@@ -187,6 +201,11 @@ void HTTPResourceRequest::onDownloadProgress(qint64 bytesReceived, qint64 bytesT
     _sendTimer->start();
 
     emit progress(bytesReceived, bytesTotal);
+	
+    // Recording HTTP bytes downloaded in stats
+    DependencyManager::get<StatTracker>()->updateStat(STAT_HTTP_RESOURCE_TOTAL_BYTES, bytesReceived);
+	
+	
 }
 
 void HTTPResourceRequest::onTimeout() {
@@ -202,4 +221,6 @@ void HTTPResourceRequest::onTimeout() {
     _result = Timeout;
     _state = Finished;
     emit finished();
+
+    DependencyManager::get<StatTracker>()->incrementStat(STAT_HTTP_REQUEST_FAILED);
 }

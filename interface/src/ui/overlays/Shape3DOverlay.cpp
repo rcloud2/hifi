@@ -45,27 +45,27 @@ void Shape3DOverlay::render(RenderArgs* args) {
         transform.setTranslation(position);
         transform.setRotation(rotation);
         auto geometryCache = DependencyManager::get<GeometryCache>();
-        auto pipeline = args->_pipeline;
-        if (!pipeline) {
-            pipeline = _isSolid ? geometryCache->getOpaqueShapePipeline() : geometryCache->getWireShapePipeline();
+        auto shapePipeline = args->_shapePipeline;
+        if (!shapePipeline) {
+            shapePipeline = _isSolid ? geometryCache->getOpaqueShapePipeline() : geometryCache->getWireShapePipeline();
         }
 
         transform.setScale(dimensions);
         batch->setModelTransform(transform);
         if (_isSolid) {
-            geometryCache->renderSolidShapeInstance(*batch, _shape, cubeColor, pipeline);
+            geometryCache->renderSolidShapeInstance(args, *batch, _shape, cubeColor, shapePipeline);
         } else {
-            geometryCache->renderWireShapeInstance(*batch, _shape, cubeColor, pipeline);
+            geometryCache->renderWireShapeInstance(args, *batch, _shape, cubeColor, shapePipeline);
         }
     }
 }
 
 const render::ShapeKey Shape3DOverlay::getShapeKey() {
     auto builder = render::ShapeKey::Builder();
-    if (getAlpha() != 1.0f) {
+    if (isTransparent()) {
         builder.withTranslucent();
     }
-    if (!getIsSolid()) {
+    if (!getIsSolid() || shouldDrawHUDLayer()) {
         builder.withUnlit().withDepthBias();
     }
     return builder.build();

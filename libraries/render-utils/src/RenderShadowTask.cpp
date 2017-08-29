@@ -28,6 +28,12 @@
 #include "model_shadow_frag.h"
 #include "skin_model_shadow_frag.h"
 
+#include "model_shadow_fade_vert.h"
+#include "skin_model_shadow_fade_vert.h"
+
+#include "model_shadow_fade_frag.h"
+#include "skin_model_shadow_fade_frag.h"
+
 using namespace render;
 
 void RenderShadowMap::run(const render::RenderContextPointer& renderContext,
@@ -35,8 +41,8 @@ void RenderShadowMap::run(const render::RenderContextPointer& renderContext,
     assert(renderContext->args);
     assert(renderContext->args->hasViewFrustum());
 
-    auto lightStage = DependencyManager::get<DeferredLightingEffect>()->getLightStage();
-
+    auto lightStage = renderContext->_scene->getStage<LightStage>();
+    assert(lightStage);
     LightStage::Index globalLightIndex { 0 };
 
     const auto globalLight = lightStage->getLight(globalLightIndex);
@@ -46,8 +52,11 @@ void RenderShadowMap::run(const render::RenderContextPointer& renderContext,
     const auto& fbo = shadow->framebuffer;
 
     RenderArgs* args = renderContext->args;
+    ShapeKey::Builder defaultKeyBuilder;
+
     gpu::doInBatch(args->_context, [&](gpu::Batch& batch) {
         args->_batch = &batch;
+        batch.enableStereo(false);
 
         glm::ivec4 viewport{0, 0, fbo->getWidth(), fbo->getHeight()};
         batch.setViewportTransform(viewport);
@@ -61,13 +70,13 @@ void RenderShadowMap::run(const render::RenderContextPointer& renderContext,
         batch.setProjectionTransform(shadow->getProjection());
         batch.setViewTransform(shadow->getView(), false);
 
-        auto shadowPipeline = _shapePlumber->pickPipeline(args, ShapeKey());
-        auto shadowSkinnedPipeline = _shapePlumber->pickPipeline(args, ShapeKey::Builder().withSkinned());
+        auto shadowPipeline = _shapePlumber->pickPipeline(args, defaultKeyBuilder);
+        auto shadowSkinnedPipeline = _shapePlumber->pickPipeline(args, defaultKeyBuilder.withSkinned());
 
         std::vector<ShapeKey> skinnedShapeKeys{};
 
         // Iterate through all inShapes and render the unskinned
-        args->_pipeline = shadowPipeline;
+        args->_shapePipeline = shadowPipeline;
         batch.setPipeline(shadowPipeline->pipeline);
         for (auto items : inShapes) {
             if (items.first.isSkinned()) {
@@ -78,13 +87,13 @@ void RenderShadowMap::run(const render::RenderContextPointer& renderContext,
         }
 
         // Reiterate to render the skinned
-        args->_pipeline = shadowSkinnedPipeline;
+        args->_shapePipeline = shadowSkinnedPipeline;
         batch.setPipeline(shadowSkinnedPipeline->pipeline);
         for (const auto& key : skinnedShapeKeys) {
             renderItems(renderContext, inShapes.at(key));
         }
 
-        args->_pipeline = nullptr;
+        args->_shapePipeline = nullptr;
         args->_batch = nullptr;
     });
 }
@@ -103,18 +112,32 @@ void RenderShadowTask::build(JobModel& task, const render::Varying& input, rende
         auto modelPixel = gpu::Shader::createPixel(std::string(model_shadow_frag));
         gpu::ShaderPointer modelProgram = gpu::Shader::createProgram(modelVertex, modelPixel);
         shapePlumber->addPipeline(
-            ShapeKey::Filter::Builder().withoutSkinned(),
+            ShapeKey::Filter::Builder().withoutSkinned().withoutFade(),
             modelProgram, state);
 
         auto skinVertex = gpu::Shader::createVertex(std::string(skin_model_shadow_vert));
         auto skinPixel = gpu::Shader::createPixel(std::string(skin_model_shadow_frag));
         gpu::ShaderPointer skinProgram = gpu::Shader::createProgram(skinVertex, skinPixel);
         shapePlumber->addPipeline(
-            ShapeKey::Filter::Builder().withSkinned(),
+            ShapeKey::Filter::Builder().withSkinned().withoutFade(),
             skinProgram, state);
+
+        auto modelFadeVertex = gpu::Shader::createVertex(std::string(model_shadow_fade_vert));
+        auto modelFadePixel = gpu::Shader::createPixel(std::string(model_shadow_fade_frag));
+        gpu::ShaderPointer modelFadeProgram = gpu::Shader::createProgram(modelFadeVertex, modelFadePixel);
+        shapePlumber->addPipeline(
+            ShapeKey::Filter::Builder().withoutSkinned().withFade(),
+            modelFadeProgram, state);
+
+        auto skinFadeVertex = gpu::Shader::createVertex(std::string(skin_model_shadow_fade_vert));
+        auto skinFadePixel = gpu::Shader::createPixel(std::string(skin_model_shadow_fade_frag));
+        gpu::ShaderPointer skinFadeProgram = gpu::Shader::createProgram(skinFadeVertex, skinFadePixel);
+        shapePlumber->addPipeline(
+            ShapeKey::Filter::Builder().withSkinned().withFade(),
+            skinFadeProgram, state);
     }
 
-    const auto cachedMode = task.addJob<RenderShadowSetup>("Setup");
+    const auto cachedMode = task.addJob<RenderShadowSetup>("ShadowSetup");
 
     // CPU jobs:
     // Fetch and cull the items from the scene
@@ -129,7 +152,7 @@ void RenderShadowTask::build(JobModel& task, const render::Varying& input, rende
     // GPU jobs: Render to shadow map
     task.addJob<RenderShadowMap>("RenderShadowMap", sortedShapes, shapePlumber);
 
-    task.addJob<RenderShadowTeardown>("Teardown", cachedMode);
+    task.addJob<RenderShadowTeardown>("ShadowTeardown", cachedMode);
 }
 
 void RenderShadowTask::configure(const Config& configuration) {
@@ -139,7 +162,8 @@ void RenderShadowTask::configure(const Config& configuration) {
 }
 
 void RenderShadowSetup::run(const render::RenderContextPointer& renderContext, Output& output) {
-    auto lightStage = DependencyManager::get<DeferredLightingEffect>()->getLightStage();
+    auto lightStage = renderContext->_scene->getStage<LightStage>();
+    assert(lightStage);
     const auto globalShadow = lightStage->getShadow(0);
 
     // Cache old render args

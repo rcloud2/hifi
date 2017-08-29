@@ -102,11 +102,12 @@ public:
     virtual glm::vec3 getParentAngularVelocity(bool& success) const;
 
     virtual AACube getMaximumAACube(bool& success) const;
-    virtual void checkAndAdjustQueryAACube();
-    virtual bool computePuffedQueryAACube();
+    bool checkAndMaybeUpdateQueryAACube();
+    void updateQueryAACube();
 
     virtual void setQueryAACube(const AACube& queryAACube);
-    virtual bool queryAABoxNeedsUpdate() const;
+    virtual bool queryAACubeNeedsUpdate() const;
+    void forceQueryAACubeUpdate() { _queryAACubeSet = false; }
     virtual AACube getQueryAACube(bool& success) const;
     virtual AACube getQueryAACube() const;
 
@@ -157,11 +158,13 @@ public:
 
     SpatiallyNestablePointer getThisPointer() const;
 
-    void markAncestorMissing(bool value) { _missingAncestor = value; }
-    bool getAncestorMissing() { return _missingAncestor; }
+    using ChildLambda = std::function<void(const SpatiallyNestablePointer&)>;
+    using ChildLambdaTest = std::function<bool(const SpatiallyNestablePointer&)>;
 
-    void forEachChild(std::function<void(SpatiallyNestablePointer)> actor);
-    void forEachDescendant(std::function<void(SpatiallyNestablePointer)> actor);
+    void forEachChild(const ChildLambda& actor) const;
+    void forEachDescendant(const ChildLambda& actor) const;
+    void forEachChildTest(const ChildLambdaTest&  actor) const;
+    void forEachDescendantTest(const ChildLambdaTest& actor) const;
 
     void die() { _isDead = true; }
     bool isDead() const { return _isDead; }
@@ -199,14 +202,13 @@ protected:
     mutable QHash<QUuid, SpatiallyNestableWeakPointer> _children;
 
     virtual void locationChanged(bool tellPhysics = true); // called when a this object's location has changed
-    virtual void dimensionsChanged() { } // called when a this object's dimensions have changed
+    virtual void dimensionsChanged() { _queryAACubeSet = false; } // called when a this object's dimensions have changed
     virtual void parentDeleted() { } // called on children of a deleted parent
 
     // _queryAACube is used to decide where something lives in the octree
     mutable AACube _queryAACube;
     mutable bool _queryAACubeSet { false };
 
-    bool _missingAncestor { false };
     quint64 _scaleChanged { 0 };
     quint64 _translationChanged { 0 };
     quint64 _rotationChanged { 0 };

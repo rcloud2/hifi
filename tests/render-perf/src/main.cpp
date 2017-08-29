@@ -47,6 +47,7 @@
 #include <gpu/gl/GLTexture.h>
 #include <gpu/StandardShaderLib.h>
 
+#include <AnimationCache.h>
 #include <SimpleEntitySimulation.h>
 #include <EntityDynamicInterface.h>
 #include <EntityDynamicFactoryInterface.h>
@@ -61,6 +62,8 @@
 #include <GeometryCache.h>
 #include <DeferredLightingEffect.h>
 #include <render/RenderFetchCullSortTask.h>
+#include <UpdateSceneTask.h>
+#include <RenderViewTask.h>
 #include <RenderShadowTask.h>
 #include <RenderDeferredTask.h>
 #include <RenderForwardTask.h>
@@ -507,7 +510,6 @@ public:
         REGISTER_ENTITY_TYPE_WITH_FACTORY(Web, WebEntityItem::factory);
 
         DependencyManager::set<ParentFinder>(_octree->getTree());
-        getEntities()->setViewFrustum(_viewFrustum);
         auto nodeList = DependencyManager::get<LimitedNodeList>();
         NodePermissions permissions;
         permissions.setAll(true);
@@ -520,7 +522,7 @@ public:
             _entitySimulation = simpleSimulation;
         }
 
-        ResourceManager::init();
+        DependencyManager::set<ResourceManager>();
 
         setFlags(Qt::MSWindowsOwnDC | Qt::Window | Qt::Dialog | Qt::WindowMinMaxButtonsHint | Qt::WindowTitleHint);
         _size = QSize(800, 600);
@@ -537,16 +539,12 @@ public:
         QThread::msleep(1000);
         _renderThread.submitFrame(gpu::FramePointer());
         _initContext.makeCurrent();
+        DependencyManager::get<GeometryCache>()->initializeShapePipelines();
         // Render engine init
-        _renderEngine->addJob<RenderShadowTask>("RenderShadowTask", _cullFunctor);
-        const auto items = _renderEngine->addJob<RenderFetchCullSortTask>("FetchCullSort", _cullFunctor);
-        assert(items.canCast<RenderFetchCullSortTask::Output>());
         static const QString RENDER_FORWARD = "HIFI_RENDER_FORWARD";
-        if (QProcessEnvironment::systemEnvironment().contains(RENDER_FORWARD)) {
-            _renderEngine->addJob<RenderForwardTask>("RenderForwardTask", items);
-        } else {
-            _renderEngine->addJob<RenderDeferredTask>("RenderDeferredTask", items);
-        }
+        bool isDeferred = !QProcessEnvironment::systemEnvironment().contains(RENDER_FORWARD);
+        _renderEngine->addJob<UpdateSceneTask>("UpdateScene");
+        _renderEngine->addJob<RenderViewTask>("RenderMainView", _cullFunctor, isDeferred);
         _renderEngine->load();
         _renderEngine->registerScene(_main3DScene);
 
@@ -575,7 +573,7 @@ public:
         DependencyManager::destroy<ModelCache>();
         DependencyManager::destroy<GeometryCache>();
         DependencyManager::destroy<ScriptCache>();
-        ResourceManager::cleanup();
+        DependencyManager::get<ResourceManager>()->cleanup();
         // remove the NodeList from the DependencyManager
         DependencyManager::destroy<NodeList>();
     }
@@ -681,7 +679,7 @@ private:
         _renderCount = _renderThread._presentCount.load();
         update();
 
-        RenderArgs renderArgs(_renderThread._gpuContext, _octree, DEFAULT_OCTREE_SIZE_SCALE,
+        RenderArgs renderArgs(_renderThread._gpuContext, DEFAULT_OCTREE_SIZE_SCALE,
             0, RenderArgs::DEFAULT_RENDER_MODE,
             RenderArgs::MONO, RenderArgs::RENDER_DEBUG_NONE);
 
@@ -721,6 +719,7 @@ private:
         // Viewport is assigned to the size of the framebuffer
         renderArgs._viewport = ivec4(0, 0, windowSize.width(), windowSize.height());
         renderArgs.setViewFrustum(_viewFrustum);
+        renderArgs._scene = _main3DScene;
 
         // Final framebuffer that will be handled to the display-plugin
         render(&renderArgs);
@@ -735,8 +734,8 @@ private:
     class EntityUpdateOperator : public RecurseOctreeOperator {
     public:
         EntityUpdateOperator(const qint64& now) : now(now) {}
-        bool preRecursion(OctreeElementPointer element) override { return true; }
-        bool postRecursion(OctreeElementPointer element) override {
+        bool preRecursion(const OctreeElementPointer& element) override { return true; }
+        bool postRecursion(const OctreeElementPointer& element) override {
             EntityTreeElementPointer entityTreeElement = std::static_pointer_cast<EntityTreeElement>(element);
             entityTreeElement->forEachEntity([&](EntityItemPointer entityItem) {
                 if (!entityItem->isParentIDValid()) {
@@ -753,8 +752,8 @@ private:
     void updateText() {
         QString title = QString("FPS %1 Culling %2 TextureMemory GPU %3 CPU %4 Max GPU %5")
             .arg(_fps).arg(_cullingEnabled)
-            .arg(toHumanSize(gpu::Context::getTextureGPUMemoryUsage(), 2))
-            .arg(toHumanSize(gpu::Texture::getTextureCPUMemoryUsage(), 2))
+            .arg(toHumanSize(gpu::Context::getTextureGPUMemSize(), 2))
+            .arg(toHumanSize(gpu::Texture::getTextureCPUMemSize(), 2))
             .arg(toHumanSize(gpu::Texture::getAllowedGPUMemoryUsage(), 2));
         setTitle(title);
 #if 0
@@ -865,7 +864,6 @@ private:
             }
         }
 
-        getEntities()->setViewFrustum(_viewFrustum);
         EntityUpdateOperator updateOperator(now);
         //getEntities()->getTree()->recurseTreeWithOperator(&updateOperator);
         {
@@ -877,7 +875,7 @@ private:
 
         last = now;
 
-        getEntities()->update();
+        getEntities()->update(false);
 
         // The pending changes collecting the changes here
         render::Transaction transaction;
@@ -889,11 +887,6 @@ private:
             auto backgroundRenderPayload = std::make_shared<BackgroundRenderData::Payload>(backgroundRenderData);
             BackgroundRenderData::_item = _main3DScene->allocateID();
             transaction.resetItem(BackgroundRenderData::_item, backgroundRenderPayload);
-        }
-        // Setup the current Zone Entity lighting
-        {
-            auto stage = DependencyManager::get<SceneScriptingInterface>()->getSkyStage();
-            DependencyManager::get<DeferredLightingEffect>()->setGlobalLight(stage->getSunLight());
         }
 
         {
@@ -915,8 +908,6 @@ private:
         PerformanceTimer perfTimer("draw");
         // The pending changes collecting the changes here
         render::Transaction transaction;
-        // Setup the current Zone Entity lighting
-        DependencyManager::get<DeferredLightingEffect>()->setGlobalLight(_sunSkyStage.getSunLight());
         {
             PerformanceTimer perfTimer("SceneProcessTransaction");
             _main3DScene->enqueueTransaction(transaction);
@@ -999,7 +990,7 @@ private:
         QFileInfo atpPathInfo(atpPath);
         if (atpPathInfo.exists()) {
             QString atpUrl = QUrl::fromLocalFile(atpPath).toString();
-            ResourceManager::setUrlPrefixOverride("atp:/", atpUrl + "/");
+            DependencyManager::get<ResourceManager>()->setUrlPrefixOverride("atp:/", atpUrl + "/");
         }
         _octree->clear();
         _octree->getTree()->readFromURL(fileName);

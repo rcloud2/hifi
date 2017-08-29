@@ -9,12 +9,13 @@
 //  See the accompanying file LICENSE or http://www.apache.org/licenses/LICENSE-2.0.html
 //
 
-#include <QQueue>
+#include "SpatiallyNestable.h"
+
+#include <queue>
 
 #include "DependencyManager.h"
 #include "SharedUtil.h"
 #include "SharedLogging.h"
-#include "SpatiallyNestable.h"
 
 const float defaultAACubeSize = 1.0f;
 const int maxParentingChain = 30;
@@ -915,24 +916,53 @@ SpatiallyNestablePointer SpatiallyNestable::getThisPointer() const {
     return thisPointer;
 }
 
-void SpatiallyNestable::forEachChild(std::function<void(SpatiallyNestablePointer)> actor) {
-    foreach(SpatiallyNestablePointer child, getChildren()) {
+
+void SpatiallyNestable::forEachChild(const ChildLambda& actor) const {
+    for (auto& child : getChildren()) {
         actor(child);
     }
 }
 
-void SpatiallyNestable::forEachDescendant(std::function<void(SpatiallyNestablePointer)> actor) {
-    QQueue<SpatiallyNestablePointer> toProcess;
-    foreach(SpatiallyNestablePointer child, getChildren()) {
-        toProcess.enqueue(child);
+void SpatiallyNestable::forEachChildTest(const ChildLambdaTest&  actor) const {
+    for (auto& child : getChildren()) {
+        if (!actor(child)) {
+            break;
+        }
+    }
+}
+
+// FIXME make a breadth_first_recursive_iterator to do this
+void SpatiallyNestable::forEachDescendant(const ChildLambda& actor) const {
+    std::list<SpatiallyNestablePointer> toProcess;
+    {
+        auto children = getChildren();
+        toProcess.insert(toProcess.end(), children.begin(), children.end());
     }
 
     while (!toProcess.empty()) {
-        SpatiallyNestablePointer object = toProcess.dequeue();
+        auto& object = toProcess.front();
         actor(object);
-        foreach (SpatiallyNestablePointer child, object->getChildren()) {
-            toProcess.enqueue(child);
+        auto children = object->getChildren();
+        toProcess.insert(toProcess.end(), children.begin(), children.end());
+        toProcess.pop_front();
+    }
+}
+
+void SpatiallyNestable::forEachDescendantTest(const ChildLambdaTest& actor) const {
+    std::list<SpatiallyNestablePointer> toProcess;
+    {
+        auto children = getChildren();
+        toProcess.insert(toProcess.end(), children.begin(), children.end());
+    }
+
+    while (!toProcess.empty()) {
+        auto& object = toProcess.front();
+        if (!actor(object)) {
+            break;
         }
+        auto children = object->getChildren();
+        toProcess.insert(toProcess.end(), children.begin(), children.end());
+        toProcess.pop_front();
     }
 }
 
@@ -946,12 +976,37 @@ AACube SpatiallyNestable::getMaximumAACube(bool& success) const {
     return AACube(getPosition(success) - glm::vec3(defaultAACubeSize / 2.0f), defaultAACubeSize);
 }
 
-void SpatiallyNestable::checkAndAdjustQueryAACube() {
-    bool success;
+const float PARENTED_EXPANSION_FACTOR = 3.0f;
+
+bool SpatiallyNestable::checkAndMaybeUpdateQueryAACube() {
+    bool success = false;
     AACube maxAACube = getMaximumAACube(success);
-    if (success && (!_queryAACubeSet || !_queryAACube.contains(maxAACube))) {
-        setQueryAACube(maxAACube);
+    if (success) {
+        // maybe update _queryAACube
+        if (!_queryAACubeSet || (_parentID.isNull() && _children.size() == 0) || !_queryAACube.contains(maxAACube)) {
+            if (_parentJointIndex != INVALID_JOINT_INDEX || _children.size() > 0 ) {
+                // make an expanded AACube centered on the object
+                float scale = PARENTED_EXPANSION_FACTOR * maxAACube.getScale();
+                _queryAACube = AACube(maxAACube.calcCenter() - glm::vec3(0.5f * scale), scale);
+            } else {
+                _queryAACube = maxAACube;
+            }
+
+            forEachDescendant([&](const SpatiallyNestablePointer& descendant) {
+                bool childSuccess;
+                AACube descendantAACube = descendant->getQueryAACube(childSuccess);
+                if (childSuccess) {
+                    if (_queryAACube.contains(descendantAACube)) {
+                        return ;
+                    }
+                    _queryAACube += descendantAACube.getMinimumPoint();
+                    _queryAACube += descendantAACube.getMaximumPoint();
+                }
+            });
+            _queryAACubeSet = true;
+        }
     }
+    return success;
 }
 
 void SpatiallyNestable::setQueryAACube(const AACube& queryAACube) {
@@ -960,48 +1015,39 @@ void SpatiallyNestable::setQueryAACube(const AACube& queryAACube) {
         return;
     }
     _queryAACube = queryAACube;
-    if (queryAACube.getScale() > 0.0f) {
-        _queryAACubeSet = true;
-    }
+    _queryAACubeSet = true;
 }
 
-bool SpatiallyNestable::queryAABoxNeedsUpdate() const {
-    bool success;
-    AACube currentAACube = getMaximumAACube(success);
-    if (!success) {
-        qCDebug(shared) << "can't getMaximumAACube for" << getID();
-        return false;
+bool SpatiallyNestable::queryAACubeNeedsUpdate() const {
+    if (!_queryAACubeSet) {
+        return true;
     }
 
     // make sure children are still in their boxes, also.
     bool childNeedsUpdate = false;
-    getThisPointer()->forEachDescendant([&](SpatiallyNestablePointer descendant) {
-        if (!childNeedsUpdate && descendant->queryAABoxNeedsUpdate()) {
+    forEachDescendantTest([&](const SpatiallyNestablePointer& descendant) {
+        if (!childNeedsUpdate && descendant->queryAACubeNeedsUpdate()) {
             childNeedsUpdate = true;
+            // Don't recurse further
+            return false;
         }
-    });
-    if (childNeedsUpdate) {
         return true;
-    }
-
-    if (_queryAACubeSet && _queryAACube.contains(currentAACube)) {
-        return false;
-    }
-
-    return true;
+    });
+    return childNeedsUpdate;
 }
 
-bool SpatiallyNestable::computePuffedQueryAACube() {
-    if (!queryAABoxNeedsUpdate()) {
-        return false;
-    }
+void SpatiallyNestable::updateQueryAACube() {
     bool success;
-    AACube currentAACube = getMaximumAACube(success);
-    // make an AACube with edges thrice as long and centered on the object
-    _queryAACube = AACube(currentAACube.getCorner() - glm::vec3(currentAACube.getScale()), currentAACube.getScale() * 3.0f);
-    _queryAACubeSet = true;
+    AACube maxAACube = getMaximumAACube(success);
+    if (_parentJointIndex != INVALID_JOINT_INDEX || _children.size() > 0 ) {
+        // make an expanded AACube centered on the object
+        float scale = PARENTED_EXPANSION_FACTOR * maxAACube.getScale();
+        _queryAACube = AACube(maxAACube.calcCenter() - glm::vec3(0.5f * scale), scale);
+    } else {
+        _queryAACube = maxAACube;
+    }
 
-    getThisPointer()->forEachDescendant([&](SpatiallyNestablePointer descendant) {
+    forEachDescendant([&](const SpatiallyNestablePointer& descendant) {
         bool success;
         AACube descendantAACube = descendant->getQueryAACube(success);
         if (success) {
@@ -1012,8 +1058,7 @@ bool SpatiallyNestable::computePuffedQueryAACube() {
             _queryAACube += descendantAACube.getMaximumPoint();
         }
     });
-
-    return true;
+    _queryAACubeSet = true;
 }
 
 AACube SpatiallyNestable::getQueryAACube(bool& success) const {

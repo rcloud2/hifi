@@ -155,6 +155,12 @@ public:
         return concept->_data;
     }
 
+    template <class T> const T& get() const {
+        auto concept = std::static_pointer_cast<typename T::JobModel>(_concept);
+        assert(concept);
+        return concept->_data;
+    }
+
     virtual void run(const ContextPointer& renderContext) {
         PerformanceTimer perfTimer(_name.c_str());
         PROFILE_RANGE(render, _name.c_str());
@@ -169,6 +175,7 @@ protected:
     ConceptPointer _concept;
     std::string _name = "";
 };
+
 
 // A task is a specialized job to run a collection of other jobs
 // It can be created on any type T by aliasing the type JobModel in the class T

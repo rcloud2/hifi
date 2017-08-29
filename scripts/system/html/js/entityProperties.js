@@ -20,7 +20,8 @@ var ICON_FOR_TYPE = {
     Light: "p",
     Zone: "o",
     PolyVox: "&#xe005;",
-    Multiple: "&#xe000;"
+    Multiple: "&#xe000;",
+    PolyLine: "&#xe01b;"
 }
 
 var EDITOR_TIMEOUT_DURATION = 1500;
@@ -82,11 +83,23 @@ function showElements(els, show) {
     }
 }
 
+function updateProperty(propertyName, propertyValue) {
+    var properties = {};
+    properties[propertyName] = propertyValue;
+    updateProperties(properties);
+}
+
+function updateProperties(properties) {
+    EventBridge.emitWebEvent(JSON.stringify({
+        id: lastEntityID,
+        type: "update",
+        properties: properties
+    }));
+}
+
 function createEmitCheckedPropertyUpdateFunction(propertyName) {
     return function() {
-        EventBridge.emitWebEvent(
-            '{"id":' + lastEntityID + ', "type":"update", "properties":{"' + propertyName + '":' + this.checked + '}}'
-        );
+        updateProperty(propertyName, this.checked);
     };
 }
 
@@ -105,13 +118,7 @@ function createEmitGroupCheckedPropertyUpdateFunction(group, propertyName) {
         var properties = {};
         properties[group] = {};
         properties[group][propertyName] = this.checked;
-        EventBridge.emitWebEvent(
-            JSON.stringify({
-                id: lastEntityID,
-                type: "update",
-                properties: properties
-            })
-        );
+        updateProperties(properties);
     };
 }
 
@@ -119,10 +126,7 @@ function createEmitNumberPropertyUpdateFunction(propertyName, decimals) {
     decimals = decimals == undefined ? 4 : decimals;
     return function() {
         var value = parseFloat(this.value).toFixed(decimals);
-
-        EventBridge.emitWebEvent(
-            '{"id":' + lastEntityID + ', "type":"update", "properties":{"' + propertyName + '":' + value + '}}'
-        );
+        updateProperty(propertyName, value);
     };
 }
 
@@ -131,28 +135,14 @@ function createEmitGroupNumberPropertyUpdateFunction(group, propertyName) {
         var properties = {};
         properties[group] = {};
         properties[group][propertyName] = this.value;
-        EventBridge.emitWebEvent(
-            JSON.stringify({
-                id: lastEntityID,
-                type: "update",
-                properties: properties,
-            })
-        );
+        updateProperties(properties);
     };
 }
 
 
 function createEmitTextPropertyUpdateFunction(propertyName) {
     return function() {
-        var properties = {};
-        properties[propertyName] = this.value;
-        EventBridge.emitWebEvent(
-            JSON.stringify({
-                id: lastEntityID,
-                type: "update",
-                properties: properties,
-            })
-        );
+        updateProperty(propertyName, this.value);
     };
 }
 
@@ -161,62 +151,44 @@ function createEmitGroupTextPropertyUpdateFunction(group, propertyName) {
         var properties = {};
         properties[group] = {};
         properties[group][propertyName] = this.value;
-        EventBridge.emitWebEvent(
-            JSON.stringify({
-                id: lastEntityID,
-                type: "update",
-                properties: properties,
-            })
-        );
+        updateProperties(properties);
     };
 }
 
 function createEmitVec3PropertyUpdateFunction(property, elX, elY, elZ) {
     return function() {
-        var data = {
-            id: lastEntityID,
-            type: "update",
-            properties: {}
-        };
-        data.properties[property] = {
+        var properties = {};
+        properties[property] = {
             x: elX.value,
             y: elY.value,
             z: elZ.value,
         };
-        EventBridge.emitWebEvent(JSON.stringify(data));
+        updateProperties(properties);
     }
 };
 
 function createEmitGroupVec3PropertyUpdateFunction(group, property, elX, elY, elZ) {
     return function() {
-        var data = {
-            id: lastEntityID,
-            type: "update",
-            properties: {}
-        };
-        data.properties[group] = {};
-        data.properties[group][property] = {
+        var properties = {};
+        properties[group] = {};
+        properties[group][property] = {
             x: elX.value,
             y: elY.value,
             z: elZ ? elZ.value : 0,
         };
-        EventBridge.emitWebEvent(JSON.stringify(data));
+        updateProperties(properties);
     }
 };
 
 function createEmitVec3PropertyUpdateFunctionWithMultiplier(property, elX, elY, elZ, multiplier) {
     return function() {
-        var data = {
-            id: lastEntityID,
-            type: "update",
-            properties: {}
-        };
-        data.properties[property] = {
+        var properties = {};
+        properties[property] = {
             x: elX.value * multiplier,
             y: elY.value * multiplier,
             z: elZ.value * multiplier,
         };
-        EventBridge.emitWebEvent(JSON.stringify(data));
+        updateProperties(properties);
     }
 };
 
@@ -227,44 +199,35 @@ function createEmitColorPropertyUpdateFunction(property, elRed, elGreen, elBlue)
 };
 
 function emitColorPropertyUpdate(property, red, green, blue, group) {
-    var data = {
-        id: lastEntityID,
-        type: "update",
-        properties: {}
-    };
+    var properties = {};
     if (group) {
-        data.properties[group] = {};
-        data.properties[group][property] = {
+        properties[group] = {};
+        properties[group][property] = {
             red: red,
             green: green,
             blue: blue,
         };
     } else {
-        data.properties[property] = {
+        properties[property] = {
             red: red,
             green: green,
             blue: blue,
         };
     }
-    EventBridge.emitWebEvent(JSON.stringify(data));
+    updateProperties(properties);
 };
 
 
 function createEmitGroupColorPropertyUpdateFunction(group, property, elRed, elGreen, elBlue) {
     return function() {
-        var data = {
-            id: lastEntityID,
-            type: "update",
-            properties: {}
-        };
-        data.properties[group] = {};
-
-        data.properties[group][property] = {
+        var properties = {};
+        properties[group] = {};
+        properties[group][property] = {
             red: elRed.value,
             green: elGreen.value,
             blue: elBlue.value,
         };
-        EventBridge.emitWebEvent(JSON.stringify(data));
+        updateProperties(properties);
     }
 };
 
@@ -277,18 +240,7 @@ function updateCheckedSubProperty(propertyName, propertyValue, subPropertyElemen
         // We've unchecked, so remove
         propertyValue = propertyValue.replace(subPropertyString + ",", "");
     }
-
-    var _properties = {}
-    _properties[propertyName] = propertyValue;
-
-    EventBridge.emitWebEvent(
-        JSON.stringify({
-            id: lastEntityID,
-            type: "update",
-            properties: _properties
-        })
-    );
-
+    updateProperty(propertyName, propertyValue);
 }
 
 function setUserDataFromEditor(noUpdate) {
@@ -314,18 +266,11 @@ function setUserDataFromEditor(noUpdate) {
             );
             return;
         } else {
-            EventBridge.emitWebEvent(
-                JSON.stringify({
-                    id: lastEntityID,
-                    type: "update",
-                    properties: {
-                        userData: text
-                    },
-                })
-            );
+            updateProperty('userData', text);
         }
     }
 }
+
 function multiDataUpdater(groupName, updateKeyPair, userDataElement, defaults) {
     var properties = {};
     var parsedData = {};
@@ -372,13 +317,7 @@ function multiDataUpdater(groupName, updateKeyPair, userDataElement, defaults) {
 
     userDataElement.value = properties['userData'];
 
-    EventBridge.emitWebEvent(
-        JSON.stringify({
-            id: lastEntityID,
-            type: "update",
-            properties: properties,
-        })
-    );
+    updateProperties(properties);
 }
 function userDataChanger(groupName, keyName, values, userDataElement, defaultValue) {
     var val = {}, def = {};
@@ -536,10 +475,20 @@ function unbindAllInputs() {
     }
 }
 
+function clearSelection() {
+	if(document.selection && document.selection.empty) {
+		document.selection.empty();
+	} else if(window.getSelection) {
+		var sel = window.getSelection();
+		sel.removeAllRanges();
+	}
+}
+
 function loaded() {
     openEventBridge(function() {
 
         var allSections = [];
+        var elPropertiesList = document.getElementById("properties-list");
         var elID = document.getElementById("property-id");
         var elType = document.getElementById("property-type");
         var elTypeIcon = document.getElementById("type-icon");
@@ -626,7 +575,8 @@ function loaded() {
         var elJSONEditor = document.getElementById("userdata-editor");
         var elNewJSONEditor = document.getElementById('userdata-new-editor');
         var elColorSections = document.querySelectorAll(".color-section");
-        var elColor = document.getElementById("property-color");
+        var elColorControl1 = document.getElementById("property-color-control1");
+        var elColorControl2 = document.getElementById("property-color-control2");
         var elColorRed = document.getElementById("property-color-red");
         var elColorGreen = document.getElementById("property-color-green");
         var elColorBlue = document.getElementById("property-color-blue");
@@ -740,7 +690,10 @@ function loaded() {
                 data = JSON.parse(data);
                 if (data.type == "server_script_status") {
                     elServerScriptError.value = data.errorInfo;
-                    elServerScriptError.style.display = data.errorInfo ? "block" : "none";
+                    // If we just set elServerScriptError's diplay to block or none, we still end up with
+                    //it's parent contributing 21px bottom padding even when elServerScriptError is display:none.
+                    // So set it's parent to block or none
+                    elServerScriptError.parentElement.style.display = data.errorInfo ? "block" : "none";
                     if (data.statusRetrieved === false) {
                         elServerScriptStatus.innerText = "Failed to retrieve status";
                     } else if (data.isRunning) {
@@ -766,6 +719,7 @@ function loaded() {
                         elTypeIcon.style.display = "none";
                         elType.innerHTML = "<i>No selection</i>";
                         elID.value = "";
+                        elPropertiesList.className = '';
                         disableProperties();
                     } else if (data.selections && data.selections.length > 1) {
                         deleteJSONEditor();
@@ -794,6 +748,7 @@ function loaded() {
                         elType.innerHTML = type + " (" + data.selections.length + ")";
                         elTypeIcon.innerHTML = ICON_FOR_TYPE[type];
                         elTypeIcon.style.display = "inline-block";
+                        elPropertiesList.className = '';
 
                         elID.value = "";
 
@@ -810,6 +765,7 @@ function loaded() {
                         lastEntityID = '"' + properties.id + '"';
                         elID.value = properties.id;
 
+                        elPropertiesList.className = properties.type + 'Menu';
                         elType.innerHTML = properties.type;
                         elTypeIcon.innerHTML = ICON_FOR_TYPE[properties.type];
                         elTypeIcon.style.display = "inline-block";
@@ -900,7 +856,6 @@ function loaded() {
                                     elCloneable.checked = parsedUserData["grabbableKey"].cloneable;
                                     elCloneableGroup.style.display = elCloneable.checked ? "block": "none";
                                     elCloneableDynamic.checked = parsedUserData["grabbableKey"].cloneDynamic ? parsedUserData["grabbableKey"].cloneDynamic : properties.dynamic;
-                                    elDynamic.checked = elCloneable.checked ? false: properties.dynamic;
                                     if (elCloneable.checked) {
                                       if ("cloneLifetime" in parsedUserData["grabbableKey"]) {
                                           elCloneableLifetime.value = parsedUserData["grabbableKey"].cloneLifetime ? parsedUserData["grabbableKey"].cloneLifetime : 300;
@@ -945,48 +900,20 @@ function loaded() {
                         elHyperlinkHref.value = properties.href;
                         elDescription.value = properties.description;
 
-                        for (var i = 0; i < allSections.length; i++) {
-                            for (var j = 0; j < allSections[i].length; j++) {
-                                allSections[i][j].style.display = 'none';
-                            }
-                        }
-
-                        for (var i = 0; i < elHyperlinkSections.length; i++) {
-                            elHyperlinkSections[i].style.display = 'table';
-                        }
 
                         if (properties.type == "Shape" || properties.type == "Box" || properties.type == "Sphere") {
-                            for (var i = 0; i < elShapeSections.length; i++) {
-                                elShapeSections[i].style.display = 'table';
-                            }
                             elShape.value = properties.shape;
                             setDropdownText(elShape);
-
-                        } else {
-                            for (var i = 0; i < elShapeSections.length; i++) {
-                                elShapeSections[i].style.display = 'none';
-                            }
                         }
 
                         if (properties.type == "Shape" || properties.type == "Box" || properties.type == "Sphere" || properties.type == "ParticleEffect") {
-                            for (var i = 0; i < elColorSections.length; i++) {
-                                elColorSections[i].style.display = 'table';
-                            }
                             elColorRed.value = properties.color.red;
                             elColorGreen.value = properties.color.green;
                             elColorBlue.value = properties.color.blue;
-                            elColor.style.backgroundColor = "rgb(" + properties.color.red + "," + properties.color.green + "," + properties.color.blue + ")";
-                        } else {
-                            for (var i = 0; i < elColorSections.length; i++) {
-                                elColorSections[i].style.display = 'none';
-                            }
+                            elColorControl1.style.backgroundColor = elColorControl2.style.backgroundColor = "rgb(" + properties.color.red + "," + properties.color.green + "," + properties.color.blue + ")";
                         }
 
                         if (properties.type == "Model") {
-                            for (var i = 0; i < elModelSections.length; i++) {
-                                elModelSections[i].style.display = 'table';
-                            }
-
                             elModelURL.value = properties.modelURL;
                             elShapeType.value = properties.shapeType;
                             setDropdownText(elShapeType);
@@ -1004,23 +931,12 @@ function loaded() {
                             elModelOriginalTextures.value = properties.originalTextures;
                             setTextareaScrolling(elModelOriginalTextures);
                         } else if (properties.type == "Web") {
-                            for (var i = 0; i < elWebSections.length; i++) {
-                                elWebSections[i].style.display = 'table';
-                            }
-                            for (var i = 0; i < elHyperlinkSections.length; i++) {
-                                elHyperlinkSections[i].style.display = 'none';
-                            }
-
                             elWebSourceURL.value = properties.sourceUrl;
                             elWebDPI.value = properties.dpi;
                         } else if (properties.type == "Text") {
-                            for (var i = 0; i < elTextSections.length; i++) {
-                                elTextSections[i].style.display = 'table';
-                            }
-
                             elTextText.value = properties.text;
                             elTextLineHeight.value = properties.lineHeight.toFixed(4);
-                            elTextFaceCamera = properties.faceCamera;
+                            elTextFaceCamera.checked = properties.faceCamera;
                             elTextTextColor.style.backgroundColor = "rgb(" + properties.textColor.red + "," + properties.textColor.green + "," + properties.textColor.blue + ")";
                             elTextTextColorRed.value = properties.textColor.red;
                             elTextTextColorGreen.value = properties.textColor.green;
@@ -1029,10 +945,6 @@ function loaded() {
                             elTextBackgroundColorGreen.value = properties.backgroundColor.green;
                             elTextBackgroundColorBlue.value = properties.backgroundColor.blue;
                         } else if (properties.type == "Light") {
-                            for (var i = 0; i < elLightSections.length; i++) {
-                                elLightSections[i].style.display = 'table';
-                            }
-
                             elLightSpotLight.checked = properties.isSpotlight;
 
                             elLightColor.style.backgroundColor = "rgb(" + properties.color.red + "," + properties.color.green + "," + properties.color.blue + ")";
@@ -1045,10 +957,6 @@ function loaded() {
                             elLightExponent.value = properties.exponent.toFixed(2);
                             elLightCutoff.value = properties.cutoff.toFixed(2);
                         } else if (properties.type == "Zone") {
-                            for (var i = 0; i < elZoneSections.length; i++) {
-                                elZoneSections[i].style.display = 'table';
-                            }
-
                             elZoneStageSunModelEnabled.checked = properties.stage.sunModelEnabled;
                             elZoneKeyLightColor.style.backgroundColor = "rgb(" + properties.keyLight.color.red + "," + properties.keyLight.color.green + "," + properties.keyLight.color.blue + ")";
                             elZoneKeyLightColorRed.value = properties.keyLight.color.red;
@@ -1085,10 +993,6 @@ function loaded() {
 
                             showElements(document.getElementsByClassName('skybox-section'), elZoneBackgroundMode.value == 'skybox');
                         } else if (properties.type == "PolyVox") {
-                            for (var i = 0; i < elPolyVoxSections.length; i++) {
-                                elPolyVoxSections[i].style.display = 'table';
-                            }
-
                             elVoxelVolumeSizeX.value = properties.voxelVolumeSize.x.toFixed(2);
                             elVoxelVolumeSizeY.value = properties.voxelVolumeSize.y.toFixed(2);
                             elVoxelVolumeSizeZ.value = properties.voxelVolumeSize.z.toFixed(2);
@@ -1113,6 +1017,7 @@ function loaded() {
                             activeElement.select();
                         }
                     }
+					clearSelection();
                 }
             });
         }
@@ -1136,7 +1041,7 @@ function loaded() {
         elDimensionsZ.addEventListener('change', dimensionsChangeFunction);
 
         elParentID.addEventListener('change', createEmitTextPropertyUpdateFunction('parentID'));
-        elParentJointIndex.addEventListener('change', createEmitNumberPropertyUpdateFunction('parentJointIndex'));
+        elParentJointIndex.addEventListener('change', createEmitNumberPropertyUpdateFunction('parentJointIndex', 0));
 
         var registrationChangeFunction = createEmitVec3PropertyUpdateFunction(
             'registrationPoint', elRegistrationX, elRegistrationY, elRegistrationZ);
@@ -1202,8 +1107,8 @@ function loaded() {
         });
 
         elGrabbable.addEventListener('change', function() {
-            if(elCloneable.checked) {
-              elGrabbable.checked = false;
+            if (elCloneable.checked) {
+                elGrabbable.checked = false;
             }
             userDataChanger("grabbableKey", "grabbable", elGrabbable, elUserData, properties.dynamic);
         });
@@ -1213,17 +1118,22 @@ function loaded() {
         elCloneable.addEventListener('change', function (event) {
             var checked = event.target.checked;
             if (checked) {
-                multiDataUpdater("grabbableKey",
-                    {cloneLifetime: elCloneableLifetime, cloneLimit: elCloneableLimit, cloneDynamic: elCloneableDynamic, cloneable: event.target},
-                    elUserData, {});
+                multiDataUpdater("grabbableKey", {
+                        cloneLifetime: elCloneableLifetime,
+                        cloneLimit: elCloneableLimit,
+                        cloneDynamic: elCloneableDynamic,
+                        cloneable: event.target,
+                        grabbable: null
+                    }, elUserData, {});
                 elCloneableGroup.style.display = "block";
-                EventBridge.emitWebEvent(
-                    '{"id":' + lastEntityID + ', "type":"update", "properties":{"dynamic":false, "grabbable": false}}'
-                );
+                updateProperty('dynamic', false);
             } else {
-                multiDataUpdater("grabbableKey",
-                    {cloneLifetime: null, cloneLimit: null, cloneDynamic: null, cloneable: false},
-                    elUserData, {});
+                multiDataUpdater("grabbableKey", {
+                        cloneLifetime: null,
+                        cloneLimit: null,
+                        cloneDynamic: null,
+                        cloneable: false
+                    }, elUserData, {});
                 elCloneableGroup.style.display = "none";
             }
         });
@@ -1258,15 +1168,7 @@ function loaded() {
             showUserDataTextArea();
             showNewJSONEditorButton();
             hideSaveUserDataButton();
-            var properties = {};
-            properties['userData'] = elUserData.value;
-            EventBridge.emitWebEvent(
-                JSON.stringify({
-                    id: lastEntityID,
-                    type: "update",
-                    properties: properties,
-                })
-            );
+            updateProperty('userData', elUserData.value)
         });
 
         elSaveUserData.addEventListener("click", function() {
@@ -1290,20 +1192,41 @@ function loaded() {
         elColorRed.addEventListener('change', colorChangeFunction);
         elColorGreen.addEventListener('change', colorChangeFunction);
         elColorBlue.addEventListener('change', colorChangeFunction);
-        colorPickers.push($('#property-color').colpick({
+        colorPickers.push($('#property-color-control1').colpick({
             colorScheme: 'dark',
             layout: 'hex',
             color: '000000',
             onShow: function(colpick) {
-                $('#property-color').attr('active', 'true');
+                $('#property-color-control1').attr('active', 'true');
             },
             onHide: function(colpick) {
-                $('#property-color').attr('active', 'false');
+                $('#property-color-control1').attr('active', 'false');
             },
             onSubmit: function(hsb, hex, rgb, el) {
                 $(el).css('background-color', '#' + hex);
                 $(el).colpickHide();
                 emitColorPropertyUpdate('color', rgb.r, rgb.g, rgb.b);
+                // Keep the companion control in sync
+                elColorControl2.style.backgroundColor = "rgb(" + rgb.r + "," + rgb.g + "," + rgb.b + ")";
+            }
+        }));
+        colorPickers.push($('#property-color-control2').colpick({
+            colorScheme: 'dark',
+            layout: 'hex',
+            color: '000000',
+            onShow: function(colpick) {
+                $('#property-color-control2').attr('active', 'true');
+            },
+            onHide: function(colpick) {
+                $('#property-color-control2').attr('active', 'false');
+            },
+            onSubmit: function(hsb, hex, rgb, el) {
+                $(el).css('background-color', '#' + hex);
+                $(el).colpickHide();
+                emitColorPropertyUpdate('color', rgb.r, rgb.g, rgb.b);
+                // Keep the companion control in sync
+                elColorControl1.style.backgroundColor = "rgb(" + rgb.r + "," + rgb.g + "," + rgb.b + ")";
+
             }
         }));
 
@@ -1567,11 +1490,9 @@ function loaded() {
     var elCollapsible = document.getElementsByClassName("section-header");
 
     var toggleCollapsedEvent = function(event) {
-        var element = event.target;
-        if (element.nodeName !== "DIV") {
-            element = element.parentNode;
-        }
-        var isCollapsed = element.getAttribute("collapsed") !== "true";
+        var element = event.target.parentNode.parentNode;
+        var isCollapsed = element.dataset.collapsed !== "true";
+        element.dataset.collapsed = isCollapsed ? "true" : false
         element.setAttribute("collapsed", isCollapsed ? "true" : "false");
         element.getElementsByTagName("span")[0].textContent = isCollapsed ? "L" : "M";
     };
